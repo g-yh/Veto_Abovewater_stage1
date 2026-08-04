@@ -548,7 +548,7 @@
         "gtz0_val_port_txprbs": [ { "value": "false", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "gtz0_val_port_rxprbs": [ { "value": "false", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "gt0_uselabtools": [ { "value": "false", "resolve_type": "user", "format": "bool", "usage": "all" } ],
-        "gt0_usesharedlogic": [ { "value": "0", "resolve_type": "user", "usage": "all" } ],
+        "gt0_usesharedlogic": [ { "value": "0", "value_src": "user", "resolve_type": "user", "usage": "all" } ],
         "gt0_val_port_clkrsvd": [ { "value": "false", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "gt0_val_port_tx8b10ben": [ { "value": "false", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "gt0_val_port_sigvalidclk": [ { "value": "false", "resolve_type": "user", "format": "bool", "usage": "all" } ],

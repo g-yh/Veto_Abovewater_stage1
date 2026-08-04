@@ -86,6 +86,7 @@ module interface_gtx_1ch(
         .gt0_rxchariscomma_out          (rx_data_is_comma),
         // RX byte alignment and clock phase adjust
         .gt0_rxbyteisaligned_out        (),
+        .gt0_rxpcommaalignen_in         (1'b1),             // enable positive comma alignment
         .gt0_rxpmareset_in              (~rx_pma_rst_n),    // important
 
         // Transmit Ports - FPGA TX Interface Ports

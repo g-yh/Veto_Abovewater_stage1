@@ -311,7 +311,7 @@ module main (
     // BE data path not built yet
     // assign be_gt_tx_data       = 16'hbc3c;
     // assign be_gt_tx_data_valid = 1'b0;
-    assign be_rx_pma_rst_n = 1'b1;
+    assign be_rx_pma_rst_n = sysrst_glb_n;
 
     interface_gtx_1ch instance_interface_gtx_1ch (
         // system
