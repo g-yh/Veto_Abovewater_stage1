@@ -2,9 +2,6 @@
 
 module interface_gtx_1ch(
     // system
-    input  wire rx_pma_rst_n,
-
-    // 100MHz DRP clock
     input  wire clk_drp_100M,
 
     // 125MHz GTX ref clock
@@ -28,7 +25,7 @@ module interface_gtx_1ch(
 
     // states for alignment
     output wire gtx_cpll_is_lock,
-    output wire rx_reset_done,
+    output wire gt_link_up,
     output wire [1:0] rx_data_is_comma,
     output wire gtx_rx_error
     );
@@ -52,6 +49,42 @@ module interface_gtx_1ch(
     assign gt_rx_data_valid = (rx_data_is_k == 2'b00) ? 1 : 0;
     wire [1:0] rx_not_in_table;
     assign gtx_rx_error = |rx_not_in_table;
+    wire rx_reset_done;
+
+    //------------------------------------------
+    // RX data alignment (from 0729_time_sync_125M):
+    //   No automatic comma alignment in the IP. Instead, on rx_not_in_table
+    //   error keep pulsing pma_rst until the RX has byte-aligned; also check
+    //   that when both bytes are comma the received data is the idle 0xbc3c,
+    //   otherwise keep resetting until that condition holds.
+    //------------------------------------------
+    reg rx_pma_rst_n_flag;
+    reg rx_pma_rst_n;
+
+    // flag computed in RX out clock domain
+    always @(posedge clk_rxoutclk_bufg) begin
+        if (~gtx_rx_error) begin
+            if (&rx_data_is_comma) begin
+                rx_pma_rst_n_flag <= (gt_rx_data == 16'hbc3c);
+            end else begin
+                rx_pma_rst_n_flag <= 1;
+            end
+        end else begin
+            rx_pma_rst_n_flag <= 0;
+        end
+    end
+
+    // pma reset driven in DRP clock domain
+    always @(posedge clk_drp_100M) begin
+        if (rx_reset_done) begin
+            rx_pma_rst_n <= rx_pma_rst_n_flag;
+        end else begin  // a reset will keep 2 periods
+            rx_pma_rst_n <= 1;
+        end
+    end
+
+    // link up: no decode error AND correct idle received (flag stable 1)
+    assign gt_link_up = rx_pma_rst_n_flag;
 
     gtx_phy_1ch instance_gtx_phy_1ch (
         // system
@@ -85,8 +118,6 @@ module interface_gtx_1ch(
         .gt0_rxcharisk_out              (rx_data_is_k),
         .gt0_rxchariscomma_out          (rx_data_is_comma),
         // RX byte alignment and clock phase adjust
-        .gt0_rxbyteisaligned_out        (),
-        .gt0_rxpcommaalignen_in         (1'b1),             // enable positive comma alignment
         .gt0_rxpmareset_in              (~rx_pma_rst_n),    // important
 
         // Transmit Ports - FPGA TX Interface Ports

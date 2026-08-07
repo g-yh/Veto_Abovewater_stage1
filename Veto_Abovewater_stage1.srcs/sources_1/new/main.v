@@ -303,21 +303,15 @@ module main (
     wire [15:0] be_gt_rx_data;
     wire        be_gt_rx_data_valid;
     wire        be_gtx_cpll_is_lock;
-    wire        be_rx_reset_done;
+    wire        be_gt_link_up;
     wire [ 1:0] be_rx_data_is_comma;
     wire        be_gtx_rx_error;
-    wire        be_rx_pma_rst_n;
 
     // BE data path not built yet
     // assign be_gt_tx_data       = 16'hbc3c;
     // assign be_gt_tx_data_valid = 1'b0;
-    assign be_rx_pma_rst_n = sysrst_glb_n;
 
     interface_gtx_1ch instance_interface_gtx_1ch (
-        // system
-        .rx_pma_rst_n(be_rx_pma_rst_n),
-
-        // 100MHz DRP clock
         .clk_drp_100M(CLK_100M),
 
         // 125MHz GTX ref clock
@@ -341,9 +335,25 @@ module main (
 
         // states for alignment
         .gtx_cpll_is_lock(be_gtx_cpll_is_lock),
-        .rx_reset_done   (be_rx_reset_done),
+        .gt_link_up      (be_gt_link_up),
         .rx_data_is_comma(be_rx_data_is_comma),
         .gtx_rx_error    (be_gtx_rx_error)
+    );
+
+    //--------------------------------
+    // Slow control from stage2 -> underwater boards
+    //   Receives 16-bit {addr(1~8), data} on the BE 1ch GT RX, routes it into
+    //   the fifo_slow_control FIFO of the addressed FE channel, and forwards it
+    //   on that channel's user_tx_data (time_sync sends it on the FE GT TX).
+    //--------------------------------
+    slow_control_manager instance_slow_control_manager (
+        .rst_n               (sysrst_glb_n),
+        .be_clk_rxoutclk_bufg(be_clk_rxoutclk_bufg),
+        .be_gt_rx_data       (be_gt_rx_data),
+        .be_gt_rx_data_valid (be_gt_rx_data_valid),
+        .clk_txoutclk_bufg   (clk_txoutclk_bufg),
+        .slow_control_data        (user_tx_data),
+        .slow_control_data_valid  (user_tx_data_valid)
     );
 
 endmodule
