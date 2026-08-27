@@ -24,11 +24,46 @@ module slow_control_manager(
 
     // per-channel slow-control output (into time_sync slow_control_data)
     output wire [127:0] slow_control_data,
-    output wire [7:0]   slow_control_data_valid
+    output wire [7:0]   slow_control_data_valid,
+
+    // per-channel PTP start pulse (1 cycle, in be_clk_rxoutclk_bufg domain)
+    output reg  [7:0]   start_ptp
     );
 
     wire [7:0] addr;
     assign addr = be_gt_rx_data[15:8];
+
+    //--------------------------------
+    // PTP command detection
+    //   addr 0xF0~0xF7 → start_ptp[ch] one-cycle pulse
+    //   addr 0xF0 → ch0, 0xF1 → ch1, ..., 0xF7 → ch7
+    //--------------------------------
+    wire ptp_cmd_valid;
+    assign ptp_cmd_valid = be_gt_rx_data_valid && (addr[7:4] == 4'hF) && (addr[3] == 1'b0);
+
+    reg ptp_cmd_valid_d;
+    always @(posedge be_clk_rxoutclk_bufg or negedge rst_n) begin
+        if (!rst_n) begin
+            ptp_cmd_valid_d <= 1'b0;
+        end else begin
+            ptp_cmd_valid_d <= ptp_cmd_valid;
+        end
+    end
+
+    // rising edge → one-cycle pulse
+    wire ptp_cmd_pulse;
+    assign ptp_cmd_pulse = ptp_cmd_valid & ~ptp_cmd_valid_d;
+
+    always @(posedge be_clk_rxoutclk_bufg or negedge rst_n) begin
+        if (!rst_n) begin
+            start_ptp <= 8'b0;
+        end else begin
+            if (ptp_cmd_pulse)
+                start_ptp[addr[2:0]] <= 1'b1;
+            else
+                start_ptp <= 8'b0;
+        end
+    end
 
     wire [127:0] fifo_dout;
     wire [7:0]   fifo_full;

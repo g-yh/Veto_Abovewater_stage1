@@ -222,9 +222,11 @@ module main (
     wire [511:0] ptp_timestamp_rx;
 
     // ptp control
-    wire        start_ptp               [0:7];
+    wire [7:0]   start_ptp;
     wire [127:0] timestamp_rx_delay;
     wire [7:0]   timestamp_rx_delay_valid;
+    assign timestamp_rx_delay = 128'b0;
+    assign timestamp_rx_delay_valid = 8'b0;
 
     // ptp uart output
     wire [63:0] uart_ptp_data;
@@ -353,7 +355,8 @@ module main (
         .be_gt_rx_data_valid (be_gt_rx_data_valid),
         .clk_txoutclk_bufg   (clk_txoutclk_bufg),
         .slow_control_data        (user_tx_data),
-        .slow_control_data_valid  (user_tx_data_valid)
+        .slow_control_data_valid  (user_tx_data_valid),
+        .start_ptp               (start_ptp)
     );
 
 endmodule
