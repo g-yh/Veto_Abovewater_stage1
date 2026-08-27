@@ -212,28 +212,28 @@ module main (
     // clock sync (time_sync) on each FE GT channel, independent
     //--------------------------------
     // gt user data
-    wire [15:0] user_tx_data            [0:7];
-    wire        user_tx_data_valid      [0:7];
-    wire [15:0] user_rx_data            [0:7];
-    wire        user_rx_data_valid      [0:7];
+    wire [127:0] user_tx_data;
+    wire [7:0]   user_tx_data_valid;
+    wire [127:0] user_rx_data;
+    wire [7:0]   user_rx_data_valid;
 
     // timestamp
-    wire [63:0] ptp_timestamp_tx        [0:7];
-    wire [63:0] ptp_timestamp_rx        [0:7];
+    wire [511:0] ptp_timestamp_tx;
+    wire [511:0] ptp_timestamp_rx;
 
     // ptp control
     wire        start_ptp               [0:7];
-    wire [15:0] timestamp_rx_delay      [0:7];
-    wire        timestamp_rx_delay_valid[0:7];
+    wire [127:0] timestamp_rx_delay;
+    wire [7:0]   timestamp_rx_delay_valid;
 
     // ptp uart output
-    wire [ 7:0] uart_ptp_data           [0:7];
-    wire        uart_ptp_read_enable    [0:7];
-    wire        uart_ptp_read_empty     [0:7];
-    wire        uart_ptp_read_valid     [0:7];
+    wire [63:0] uart_ptp_data;
+    wire [7:0]  uart_ptp_read_enable;
+    wire [7:0]  uart_ptp_read_empty;
+    wire [7:0]  uart_ptp_read_valid;
 
     // debug
-    wire [ 3:0] ptp_flags               [0:7];
+    wire [31:0] ptp_flags;
 
     genvar ch;
     generate

@@ -23,20 +23,21 @@ module slow_control_manager(
     input  wire [7:0] clk_txoutclk_bufg,
 
     // per-channel slow-control output (into time_sync slow_control_data)
-    output wire [15:0] slow_control_data       [0:7],
-    output wire        slow_control_data_valid [0:7]
+    output wire [127:0] slow_control_data,
+    output wire [7:0]   slow_control_data_valid
     );
 
-    wire [7:0] addr = be_gt_rx_data[15:8];
+    wire [7:0] addr;
+    assign addr = be_gt_rx_data[15:8];
 
-    wire [15:0] fifo_dout           [0:7];
-    wire        fifo_full           [0:7];
-    wire        fifo_empty          [0:7];
-    wire        fifo_valid          [0:7];
-    wire        fifo_wr_rst_busy    [0:7];
-    wire        fifo_rd_rst_busy    [0:7];
-    wire        fifo_wr_en          [0:7];
-    wire        fifo_rd_en          [0:7];
+    wire [127:0] fifo_dout;
+    wire [7:0]   fifo_full;
+    wire [7:0]   fifo_empty;
+    wire [7:0]   fifo_valid;
+    wire [7:0]   fifo_wr_rst_busy;
+    wire [7:0]   fifo_rd_rst_busy;
+    wire [7:0]   fifo_wr_en;
+    wire [7:0]   fifo_rd_en;
 
     genvar ch;
     generate
@@ -53,7 +54,7 @@ module slow_control_manager(
                 .din         (be_gt_rx_data),
                 .wr_en       (fifo_wr_en[ch]),
                 .rd_en       (fifo_rd_en[ch]),
-                .dout        (fifo_dout[ch]),
+                .dout        (fifo_dout[ch*16 +: 16]),
                 .full        (fifo_full[ch]),
                 .empty       (fifo_empty[ch]),
                 .valid       (fifo_valid[ch]),
@@ -65,7 +66,7 @@ module slow_control_manager(
             // valid=1 means dout currently holds valid data to present on the channel.
             assign fifo_rd_en[ch]       = ~fifo_empty[ch] && ~fifo_rd_rst_busy[ch];
             assign slow_control_data_valid[ch] = fifo_valid[ch];
-            assign slow_control_data[ch]     = fifo_dout[ch];
+            assign slow_control_data[ch*16 +: 16] = fifo_dout[ch*16 +: 16];
         end
     endgenerate
 
