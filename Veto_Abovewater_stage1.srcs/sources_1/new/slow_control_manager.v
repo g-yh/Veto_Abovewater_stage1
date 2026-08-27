@@ -27,7 +27,11 @@ module slow_control_manager(
     output wire [7:0]   slow_control_data_valid,
 
     // per-channel PTP start pulse (1 cycle, in be_clk_rxoutclk_bufg domain)
-    output reg  [7:0]   start_ptp
+    output reg  [7:0]   start_ptp,
+
+    // PTP delay value (in be_clk_rxoutclk_bufg domain)
+    output reg  [127:0] timestamp_rx_delay,
+    output reg  [7:0]   timestamp_rx_delay_valid
     );
 
     wire [7:0] addr;
@@ -62,6 +66,30 @@ module slow_control_manager(
                 start_ptp[addr[2:0]] <= 1'b1;
             else
                 start_ptp <= 8'b0;
+        end
+    end
+
+    //--------------------------------
+    // PTP delay value receive
+    //   addr 0xF8:
+    //     data[15:8] == 0xFF → valid, latch data[7:0] as delay[7:0]
+    //     data[15:8] == 0x00 → invalid, clear valid
+    //--------------------------------
+    wire ptp_delay_cmd;
+    assign ptp_delay_cmd = be_gt_rx_data_valid && (addr == 8'hF8);
+
+    always @(posedge be_clk_rxoutclk_bufg or negedge rst_n) begin
+        if (!rst_n) begin
+            timestamp_rx_delay       <= 128'b0;
+            timestamp_rx_delay_valid <= 8'b0;
+        end else if (ptp_delay_cmd) begin
+            if (be_gt_rx_data[15:8] == 8'hFF) begin
+                // all 8 channels share the same delay value
+                timestamp_rx_delay       <= {8{8'b0, be_gt_rx_data[7:0]}};
+                timestamp_rx_delay_valid <= 8'hFF;
+            end else begin
+                timestamp_rx_delay_valid <= 8'b0;
+            end
         end
     end
 
