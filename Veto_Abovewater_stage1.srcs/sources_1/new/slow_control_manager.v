@@ -27,12 +27,13 @@ module slow_control_manager(
     output wire [127:0] slow_control_data,
     output wire [7:0]   slow_control_data_valid,
 
-    // per-channel PTP start pulse (1 cycle, in be_clk_rxoutclk_bufg domain)
-    output reg  [7:0]   start_ptp,
+    // per-channel PTP start (clk_txoutclk_bufg[ch] domain, from CDC FIFO)
+    output wire [7:0]   ptp_start,
+    output wire [7:0]   ptp_start_valid,
 
-    // per-channel PTP delay value (16-bit per channel, be_clk_rxoutclk_bufg domain)
-    output reg  [127:0] timestamp_rx_delay,
-    output reg  [7:0]   timestamp_rx_delay_valid
+    // per-channel PTP delay (clk_txoutclk_bufg[ch] domain, from CDC FIFO)
+    output wire [127:0] timestamp_rx_delay,
+    output wire [7:0]   timestamp_rx_delay_valid
     );
 
     wire [7:0] addr;
@@ -55,7 +56,7 @@ module slow_control_manager(
     assign ptp_delay_ch = addr[3:0] - 4'd1;  // 0xE1→ch0, 0xE2→ch1, ..., 0xE8→ch7
 
     //--------------------------------
-    // PTP start: single-cycle pulse on rising edge
+    // PTP start: write 1-bit pulse into FIFO
     //--------------------------------
     reg ptp_start_cmd_d;
     always @(posedge be_clk_rxoutclk_bufg or negedge rst_n) begin
@@ -68,19 +69,15 @@ module slow_control_manager(
     wire ptp_start_pulse;
     assign ptp_start_pulse = is_ptp_start & ~ptp_start_cmd_d;
 
-    always @(posedge be_clk_rxoutclk_bufg or negedge rst_n) begin
-        if (!rst_n)
-            start_ptp <= 8'b0;
-        else if (ptp_start_pulse)
-            start_ptp[ptp_start_ch] <= 1'b1;
-        else
-            start_ptp <= 8'b0;
-    end
+    wire ptp_fifo_wr_en;
+    wire ptp_fifo_din;
+    wire [2:0] ptp_fifo_wr_ch;
+    assign ptp_fifo_wr_en = ptp_start_pulse;
+    assign ptp_fifo_din   = 1'b1;
+    assign ptp_fifo_wr_ch = ptp_start_ch;
 
     //--------------------------------
-    // PTP delay: 2-word protocol
-    //   word1 (0xE1~0xE8): select channel, save ch index
-    //   word2 (any addr):  latch delay value into saved channel
+    // PTP delay: 2-word protocol, write into FIFO
     //--------------------------------
     reg        ptp_delay_pending;
     reg [2:0]  ptp_delay_ch_saved;
@@ -90,68 +87,109 @@ module slow_control_manager(
             ptp_delay_pending  <= 1'b0;
             ptp_delay_ch_saved <= 3'b0;
         end else if (is_ptp_delay && !ptp_delay_pending) begin
-            // word1: save channel, wait for word2
             ptp_delay_pending  <= 1'b1;
             ptp_delay_ch_saved <= ptp_delay_ch;
         end else if (ptp_delay_pending && be_gt_rx_data_valid) begin
-            // word2: consumed, clear pending
             ptp_delay_pending <= 1'b0;
         end
     end
 
-    // word2 latches delay value
-    always @(posedge be_clk_rxoutclk_bufg or negedge rst_n) begin
-        if (!rst_n) begin
-            timestamp_rx_delay       <= 128'b0;
-            timestamp_rx_delay_valid <= 8'b0;
-        end else if (ptp_delay_pending && be_gt_rx_data_valid) begin
-            // latch 16-bit delay into the selected channel
-            timestamp_rx_delay[ptp_delay_ch_saved*16 +: 16] <= be_gt_rx_data;
-            timestamp_rx_delay_valid[ptp_delay_ch_saved]     <= 1'b1;
-        end
-    end
+    wire ts_fifo_wr_en;
+    wire [15:0] ts_fifo_din;
+    wire [2:0]  ts_fifo_wr_ch;
+    assign ts_fifo_wr_en = ptp_delay_pending && be_gt_rx_data_valid;
+    assign ts_fifo_din   = be_gt_rx_data;
+    assign ts_fifo_wr_ch = ptp_delay_ch_saved;
 
     //--------------------------------
     // Slow control FIFOs (addr 1~8)
     //--------------------------------
-    wire [127:0] fifo_dout;
-    wire [7:0]   fifo_full;
-    wire [7:0]   fifo_empty;
-    wire [7:0]   fifo_valid;
-    wire [7:0]   fifo_wr_rst_busy;
-    wire [7:0]   fifo_rd_rst_busy;
-    wire [7:0]   fifo_wr_en;
-    wire [7:0]   fifo_rd_en;
 
     genvar ch;
     generate
         for (ch = 0; ch < 8; ch = ch + 1) begin : gen_fifo
-            // only the FIFO matching addr (1~8) is written
-            // ptp_delay word2 also has valid addr but doesn't match ch+1 when addr > 8
-            assign fifo_wr_en[ch] = is_slow_ctrl &&
-                                    (addr == ch + 8'd1) &&
-                                    ~fifo_wr_rst_busy[ch];
+
+            //--------------------------------
+            // Slow control FIFO (addr 1~8)
+            //--------------------------------
+            wire [15:0] fifo_dout_ch;
+            wire        fifo_full_ch;
+            wire        fifo_empty_ch;
+            wire        fifo_valid_ch;
+            wire        fifo_wr_rst_busy_ch;
+            wire        fifo_rd_rst_busy_ch;
+            wire        fifo_wr_en_ch;
+            wire        fifo_rd_en_ch;
+
+            assign fifo_wr_en_ch = is_slow_ctrl &&
+                                   (addr == ch + 8'd1) &&
+                                   ~fifo_wr_rst_busy_ch;
 
             fifo_slow_control instance_fifo_slow_control (
                 .rst         (~rst_n),
                 .wr_clk      (be_clk_rxoutclk_bufg),
                 .rd_clk      (clk_txoutclk_bufg[ch]),
                 .din         (be_gt_rx_data),
-                .wr_en       (fifo_wr_en[ch]),
-                .rd_en       (fifo_rd_en[ch]),
-                .dout        (fifo_dout[ch*16 +: 16]),
-                .full        (fifo_full[ch]),
-                .empty       (fifo_empty[ch]),
-                .valid       (fifo_valid[ch]),
-                .wr_rst_busy (fifo_wr_rst_busy[ch]),
-                .rd_rst_busy (fifo_rd_rst_busy[ch])
+                .wr_en       (fifo_wr_en_ch),
+                .rd_en       (fifo_rd_en_ch),
+                .dout        (fifo_dout_ch),
+                .full        (fifo_full_ch),
+                .empty       (fifo_empty_ch),
+                .valid       (fifo_valid_ch),
+                .wr_rst_busy (fifo_wr_rst_busy_ch),
+                .rd_rst_busy (fifo_rd_rst_busy_ch)
             );
 
-            // standard mode: rd_en pops (keep draining while data present),
-            // valid=1 means dout currently holds valid data to present on the channel.
-            assign fifo_rd_en[ch]       = ~fifo_empty[ch] && ~fifo_rd_rst_busy[ch];
-            assign slow_control_data_valid[ch] = fifo_valid[ch];
-            assign slow_control_data[ch*16 +: 16] = fifo_dout[ch*16 +: 16];
+            assign fifo_rd_en_ch = ~fifo_empty_ch && ~fifo_rd_rst_busy_ch;
+            assign slow_control_data_valid[ch] = fifo_valid_ch;
+            assign slow_control_data[ch*16 +: 16] = fifo_dout_ch;
+
+            //--------------------------------
+            // PTP start CDC FIFO (1-bit, be_clk_rxoutclk_bufg → clk_txoutclk_bufg)
+            //--------------------------------
+            wire ptp_fifo_empty;
+            wire ptp_fifo_rd_rst_busy;
+
+            fifo_ptp instance_fifo_ptp_start (
+                .rst        (~rst_n),
+                .wr_clk     (be_clk_rxoutclk_bufg),
+                .rd_clk     (clk_txoutclk_bufg[ch]),
+                .din        (ptp_fifo_din),
+                .wr_en      (ptp_fifo_wr_en && (ptp_fifo_wr_ch == ch[2:0])),
+                .rd_en      (~ptp_fifo_empty && ~ptp_fifo_rd_rst_busy),
+                .dout       (),
+                .full       (),
+                .empty      (ptp_fifo_empty),
+                .valid      (ptp_start_valid[ch]),
+                .wr_rst_busy(),
+                .rd_rst_busy(ptp_fifo_rd_rst_busy)
+            );
+
+            assign ptp_start[ch] = ptp_start_valid[ch];
+
+            //--------------------------------
+            // PTP delay CDC FIFO (16-bit, be_clk_rxoutclk_bufg → clk_txoutclk_bufg)
+            //--------------------------------
+            wire ts_fifo_empty;
+            wire ts_fifo_rd_rst_busy;
+            wire [15:0] ts_fifo_dout;
+
+            fifo_timestamp instance_fifo_timestamp_delay (
+                .rst        (~rst_n),
+                .wr_clk     (be_clk_rxoutclk_bufg),
+                .rd_clk     (clk_txoutclk_bufg[ch]),
+                .din        (ts_fifo_din),
+                .wr_en      (ts_fifo_wr_en && (ts_fifo_wr_ch == ch[2:0])),
+                .rd_en      (~ts_fifo_empty && ~ts_fifo_rd_rst_busy),
+                .dout       (ts_fifo_dout),
+                .full       (),
+                .empty      (ts_fifo_empty),
+                .valid      (timestamp_rx_delay_valid[ch]),
+                .wr_rst_busy(),
+                .rd_rst_busy(ts_fifo_rd_rst_busy)
+            );
+
+            assign timestamp_rx_delay[ch*16 +: 16] = ts_fifo_dout;
         end
     endgenerate
 
