@@ -47,18 +47,26 @@ module main (
     input  wire       BE_SFP_RX_P,
     input  wire       BE_SFP_RX_N,
     output wire       SFP_TX_DISABLE,
-    // LED
-    // output	wire	[4:1]	LED			    ,
+
+
     // spi interface
     output wire       cs_ad9528,
     output wire       sclk_ad9528,
     inout  wire       sdio_ad9528,
+
     // ad9528 reset n
     output wire       ad9528_rst_n,
+
     // ad9528 sysref request p
     output wire       ad9528_sysref_req,
+
     // ext trigger input
     // input   wire            ext_trig_in     ,
+
+    // GT link status LEDs
+    output wire       gt_link_up_led1,	// all 8 FE gt_link_up high
+    output wire       gt_link_up_led2,	// BE gt_link_up
+    
     // fan 	
     output wire       FAN_PWM
 );
@@ -75,13 +83,14 @@ module main (
     wire       sysrst_glb_n;
     wire       cfg_ad9528;
 
-    wire       aurora_reset_pb;
-
     assign ad9528_rst_n   = sysrst_glb_n;
     assign sysrst         = 1'b0;
     assign FAN_PWM        = 1'b1;
     assign SFP_TX_DISABLE = 1'b0;
     // assign      LED[4]              = pll_locked;
+
+    assign gt_link_up_led1 = &gt_link_up;
+    assign gt_link_up_led2 = be_gt_link_up;
 
     // 200M clk input buff
     IBUFDS #(
@@ -112,7 +121,6 @@ module main (
         .sysrst      (sysrst),
         .pll_locked  (pll_locked),
         .cfg_ad9528  (cfg_ad9528),
-        .rst_aurura  (aurora_reset_pb),
         .sysrst_glb_n(sysrst_glb_n)
     );
 
@@ -153,6 +161,7 @@ module main (
     wire [  7:0] gt_rx_data_valid;
     wire [  7:0] gtx_cpll_is_lock;
     wire [  7:0] rx_reset_done;
+    wire [  7:0] gt_link_up;
     wire [ 15:0] rx_data_is_comma;
     wire [  7:0] gtx_rx_error;
 
@@ -215,6 +224,7 @@ module main (
     localparam TRIG_TOTAL = 16'd57;
     localparam HEAD_LEN = 16'd7;
     localparam EVT_WORDS = TRIG_TOTAL + HEAD_LEN;  // 64 words/event
+    localparam ADC_FIFO_FULL_THRESH = 11'd1984;  // 剩余>=1整事件空位(2048-64)，与stage2一致
 
     // gt user data
     wire [127:0] user_tx_data;
@@ -298,6 +308,7 @@ module main (
                 .gt_rx_error   (gtx_rx_error[ch]),
                 .gt_pma_rst_n  (rx_pma_rst_n[ch]),
                 .gt_rx_rst_done(rx_reset_done[ch]),
+                .gt_link_up    (gt_link_up[ch]),
 
                 .flags(ptp_flags[ch])
             );
@@ -330,7 +341,10 @@ module main (
                         if (user_rx_data[ch*16+:16] == 16'hFFF1) begin
                             sc_pend <= 1'b1;
                         end else if (user_rx_data[ch*16+:16] == 16'hFFF0) begin
-                            evt_pend <= EVT_WORDS[6:0];
+                            if (~adc_fifo_prog_full) begin
+                                evt_pend <= EVT_WORDS[6:0];  // 剩余空间>=1整事件，启用本事件
+                            end
+                            // else: 空间不足，evt_pend 保持 0 → 本帧全部丢弃，等下一个 FFF0
                         end
                     end
                 end
@@ -353,8 +367,8 @@ module main (
                 .rd_rst_busy(sc_rd_rst_busy)
             );
 
-            // ADC 事件 FIFO（prog_empty_thresh = EVT_WORDS）
-            wire adc_fifo_full, adc_wr_rst_busy, adc_rd_rst_busy;
+            // ADC 事件 FIFO（prog_empty_thresh = EVT_WORDS, prog_full_thresh = ADC_FIFO_FULL_THRESH）
+            wire adc_fifo_full, adc_fifo_prog_full, adc_wr_rst_busy, adc_rd_rst_busy;
             fifo_adc u_fifo_adc (
                 .rst              (~sysrst_glb_n),
                 .wr_clk           (clk_rxoutclk_bufg[ch]),
@@ -363,9 +377,11 @@ module main (
                 .wr_en            (adc_wr_this && ~adc_fifo_full && ~adc_wr_rst_busy),
                 .rd_en            (adc_rd_en[ch]),
                 .prog_empty_thresh(EVT_WORDS),
+                .prog_full_thresh (ADC_FIFO_FULL_THRESH),
                 .dout             (adc_fifo_dout[ch*16+:16]),
                 .full             (adc_fifo_full),
                 .empty            (adc_fifo_empty[ch]),
+                .prog_full        (adc_fifo_prog_full),
                 .prog_empty       (adc_fifo_prog_empty[ch]),
                 .valid            (adc_fifo_valid[ch]),
                 .wr_rst_busy      (adc_wr_rst_busy),
@@ -387,17 +403,20 @@ module main (
     localparam BE_TX_AD_HDR = 3'd3;  // FFF0 帧头
     localparam BE_TX_AD_BOARD = 3'd4;  // 板号头
     localparam BE_TX_AD_DATA = 3'd5;  // EVT_WORDS 个数据 word
-    localparam BE_TX_PTP = 3'd6;  // PTP 最高优先，当前通道一直排空
+    localparam BE_TX_PTP_HDR = 3'd6;   // PTP 帧头 FFF2
+    localparam BE_TX_PTP_DATA = 3'd7;  // PTP 固定读 6 次
 
     reg [2:0] be_tx_state;
     reg [2:0] rr_idx;
     reg [6:0] evt_tx_cnt;
+    reg [2:0] ptp_tx_cnt;
 
     always @(posedge be_clk_txoutclk_bufg or negedge sysrst_glb_n) begin
         if (!sysrst_glb_n) begin
             be_tx_state         <= BE_TX_IDLE;
             rr_idx              <= 3'd0;
             evt_tx_cnt          <= 7'd0;
+            ptp_tx_cnt          <= 3'd0;
             sc_rd_en            <= 8'd0;
             adc_rd_en           <= 8'd0;
             ptp_read_enable     <= 8'd0;
@@ -412,7 +431,7 @@ module main (
                     be_gt_tx_data_valid <= 1'b0;
                     be_gt_tx_data <= 16'hbc3c;
                     if (~ptp_read_empty[rr_idx]) begin
-                        be_tx_state <= BE_TX_PTP;
+                        be_tx_state <= BE_TX_PTP_HDR;
                     end else if (~sc_fifo_empty[rr_idx]) begin
                         be_tx_state <= BE_TX_SC_HDR;
                     end else if (~adc_fifo_prog_empty[rr_idx]) begin
@@ -464,14 +483,27 @@ module main (
                         be_gt_tx_data_valid <= 1'b0;
                     end
                 end
-                // ---- PTP：最高优先，当前 rr_idx 通道一直排空 ----
-                BE_TX_PTP: begin
-                    ptp_read_enable <= (8'd1 << rr_idx);
-                    be_gt_tx_data_valid <= ptp_read_valid[rr_idx];
-                    be_gt_tx_data <= {8'b0, ptp_data[rr_idx*8 +: 8]};
-                    if (ptp_read_empty[rr_idx]) begin
-                        ptp_read_enable <= 8'd0;
-                        be_tx_state <= BE_TX_IDLE;
+                // ---- PTP：最高优先，FFF2 头 + 固定读 6 次 ----
+                BE_TX_PTP_HDR: begin
+                    be_gt_tx_data       <= 16'hFFF2;
+                    be_gt_tx_data_valid <= 1'b1;
+                    ptp_read_enable     <= (8'd1 << rr_idx);
+                    ptp_tx_cnt          <= 3'd0;
+                    be_tx_state         <= BE_TX_PTP_DATA;
+                end
+                BE_TX_PTP_DATA: begin
+                    ptp_read_enable     <= (8'd1 << rr_idx);
+                    if (ptp_read_valid[rr_idx]) begin
+                        be_gt_tx_data       <= {8'b0, ptp_data[rr_idx*8 +: 8]};
+                        be_gt_tx_data_valid <= 1'b1;
+                        if (ptp_tx_cnt == 3'd5) begin
+                            ptp_read_enable <= 8'd0;
+                            be_tx_state     <= BE_TX_IDLE;
+                        end else begin
+                            ptp_tx_cnt <= ptp_tx_cnt + 3'd1;
+                        end
+                    end else begin
+                        be_gt_tx_data_valid <= 1'b0;
                     end
                 end
                 default: begin
@@ -497,8 +529,8 @@ module main (
 
     wire        be_clk_txoutclk_bufg;
     wire        be_clk_rxoutclk_bufg;
-    wire [15:0] be_gt_tx_data;
-    wire        be_gt_tx_data_valid;
+    reg [15:0] be_gt_tx_data;
+    reg        be_gt_tx_data_valid;
     wire [15:0] be_gt_rx_data;
     wire        be_gt_rx_data_valid;
     wire        be_gtx_cpll_is_lock;

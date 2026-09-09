@@ -38,6 +38,7 @@ module time_sync_manager(
     input  wire gt_rx_error,
     output reg  gt_pma_rst_n,
     input  wire gt_rx_rst_done,
+    output wire gt_link_up,      // link established = alignment flag stable
 
     // debug
     output wire [3:0] flags
@@ -66,6 +67,8 @@ module time_sync_manager(
             gt_pma_rst_n <= 1;
         end
     end
+
+    assign gt_link_up = gt_pma_rst_n_flag;
 
 
     // ## 2. time stamp alignment
