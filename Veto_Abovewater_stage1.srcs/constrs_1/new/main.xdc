@@ -13,6 +13,7 @@ set_property PACKAGE_PIN U7 [get_ports gt_refclk4_n]
 create_clock -period 8.000 -name gt_refclk4_p [get_ports gt_refclk4_p]
 
 
+
 set_property PACKAGE_PIN L4     [get_ports FE_SFP_TX_P[0]]
 set_property PACKAGE_PIN L3     [get_ports FE_SFP_TX_N[0]]
 set_property PACKAGE_PIN P2     [get_ports FE_SFP_TX_P[1]]
@@ -47,6 +48,42 @@ set_property PACKAGE_PIN D5     [get_ports FE_SFP_RX_N[6]]
 set_property PACKAGE_PIN A8     [get_ports FE_SFP_RX_P[7]]
 set_property PACKAGE_PIN A7     [get_ports FE_SFP_RX_N[7]]
 
+
+#set_property PACKAGE_PIN P2     [get_ports FE_SFP_TX_P[0]]
+#set_property PACKAGE_PIN P1     [get_ports FE_SFP_TX_N[0]]
+#set_property PACKAGE_PIN N4     [get_ports FE_SFP_TX_P[1]]
+#set_property PACKAGE_PIN N3     [get_ports FE_SFP_TX_N[1]]
+#set_property PACKAGE_PIN M2     [get_ports FE_SFP_TX_P[2]]
+#set_property PACKAGE_PIN M1     [get_ports FE_SFP_TX_N[2]]
+#set_property PACKAGE_PIN L4     [get_ports FE_SFP_TX_P[3]]
+#set_property PACKAGE_PIN L3     [get_ports FE_SFP_TX_N[3]]
+#set_property PACKAGE_PIN D2     [get_ports FE_SFP_TX_P[4]]
+#set_property PACKAGE_PIN D1     [get_ports FE_SFP_TX_N[4]]
+#set_property PACKAGE_PIN C4     [get_ports FE_SFP_TX_P[5]]
+#set_property PACKAGE_PIN C3     [get_ports FE_SFP_TX_N[5]]
+#set_property PACKAGE_PIN B2     [get_ports FE_SFP_TX_P[6]]
+#set_property PACKAGE_PIN B1     [get_ports FE_SFP_TX_N[6]]
+#set_property PACKAGE_PIN A4     [get_ports FE_SFP_TX_P[7]]
+#set_property PACKAGE_PIN A3     [get_ports FE_SFP_TX_N[7]]
+
+#set_property PACKAGE_PIN T6     [get_ports FE_SFP_RX_P[0]]
+#set_property PACKAGE_PIN T5     [get_ports FE_SFP_RX_N[0]]
+#set_property PACKAGE_PIN R4     [get_ports FE_SFP_RX_P[1]]
+#set_property PACKAGE_PIN R3     [get_ports FE_SFP_RX_N[1]]
+#set_property PACKAGE_PIN P6     [get_ports FE_SFP_RX_P[2]]
+#set_property PACKAGE_PIN P5     [get_ports FE_SFP_RX_N[2]]
+#set_property PACKAGE_PIN M6     [get_ports FE_SFP_RX_P[3]]
+#set_property PACKAGE_PIN M5     [get_ports FE_SFP_RX_N[3]]
+#set_property PACKAGE_PIN E4     [get_ports FE_SFP_RX_P[4]]
+#set_property PACKAGE_PIN E3     [get_ports FE_SFP_RX_N[4]]
+#set_property PACKAGE_PIN D6     [get_ports FE_SFP_RX_P[5]]
+#set_property PACKAGE_PIN D5     [get_ports FE_SFP_RX_N[5]]
+#set_property PACKAGE_PIN B6     [get_ports FE_SFP_RX_P[6]]
+#set_property PACKAGE_PIN B5     [get_ports FE_SFP_RX_N[6]]
+#set_property PACKAGE_PIN A8     [get_ports FE_SFP_RX_P[7]]
+#set_property PACKAGE_PIN A7     [get_ports FE_SFP_RX_N[7]]
+
+
 set_property PACKAGE_PIN Y2    [get_ports BE_SFP_TX_P]
 set_property PACKAGE_PIN Y1    [get_ports BE_SFP_TX_N]
 
@@ -75,3 +112,9 @@ set_property PACKAGE_PIN U22 [get_ports gt_link_up_led1]
 
 set_property IOSTANDARD LVCMOS33 [get_ports gt_link_up_led2]
 set_property PACKAGE_PIN U23 [get_ports gt_link_up_led2]
+
+set_property IOSTANDARD LVCMOS33 [get_ports MCX_CLK0]
+set_property PACKAGE_PIN W24 [get_ports MCX_CLK0]
+
+set_property IOSTANDARD LVCMOS33 [get_ports MCX_CLK1]
+set_property PACKAGE_PIN W23 [get_ports MCX_CLK1]
