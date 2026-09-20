@@ -281,14 +281,20 @@ module main (
     // debug
     wire [ 31:0] ptp_flags;
 
-    //--------------------------------
-    // 每通道接收返回 FIFO（写侧 clk_rxoutclk_bufg[ch]，读侧 be_clk_txoutclk_bufg）
-    //   fifo_sc_tx: 慢控返回（1 word/帧），fifo_adc: ADC 事件（EVT_WORDS words/帧）
-    //--------------------------------
-    reg  [  7:0] sc_rd_en;
-    wire [  7:0] sc_fifo_empty;
-    wire [  7:0] sc_fifo_valid;
-    wire [127:0] sc_fifo_dout;
+     //--------------------------------
+     // 每通道接收返回 FIFO（写侧 clk_rxoutclock_bufg[ch]，读侧 be_clk_txoutclock_bufg）
+     //   fifo_sc_tx: 慢控返回（1 word/帧），fifo_adc: ADC 事件（EVT_WORDS words/帧）
+     //   fifo_ack_tx: W-packet ack 返回（0xFFF3 + 1 word）
+     //--------------------------------
+     reg  [  7:0] sc_rd_en;
+     wire [  7:0] sc_fifo_empty;
+     wire [  7:0] sc_fifo_valid;
+     wire [127:0] sc_fifo_dout;
+
+     reg  [  7:0] ack3_rd_en;
+     wire [  7:0] ack3_fifo_empty;
+     wire [  7:0] ack3_fifo_valid;
+     wire [127:0] ack3_fifo_dout;
 
     reg  [  7:0] adc_rd_en;
     wire [  7:0] adc_fifo_empty;
@@ -343,59 +349,79 @@ module main (
                 .flags(ptp_flags[ch])
             );
 
-            //--------------------------------
-            // 接收帧头解析 + FIFO 写入（clk_rxoutclk_bufg[ch] 域）
-            //   user_rx_data 为 PTP 剥离后的流：
-            //     0xFFF1 -> 1 个慢控返回 word -> fifo_sc_tx
-            //     0xFFF0 -> EVT_WORDS 个 ADC word -> fifo_adc
-            //     其它(含 bc3c) -> 忽略
-            //--------------------------------
-            reg        sc_pend;
-            reg  [6:0] evt_pend;
+             //--------------------------------
+             // 接收帧头解析 + FIFO 写入（clk_rxoutclock_bufg[ch] 域）
+             //   user_rx_data 为 PTP 剥离后的流：
+             //     0xFFF3 -> W-packet ack -> fifo_ack_tx
+             //     0xFFF1 -> 1 个慢控返回 word -> fifo_sc_tx
+             //     0xFFF0 -> EVT_WORDS 个 ADC word -> fifo_adc
+             //     其它(含 bc3c) -> 忽略
+             //--------------------------------
+             reg        sc_pend;
+             reg  [6:0] evt_pend;
+             reg        ack3_pend;
 
-            wire       sc_wr_this = user_rx_data_valid[ch] && sc_pend;
-            wire       adc_wr_this = user_rx_data_valid[ch] && (evt_pend != 7'd0);
+             wire       sc_wr_this = user_rx_data_valid[ch] && sc_pend;
+             wire       adc_wr_this = user_rx_data_valid[ch] && (evt_pend != 7'd0);
 
-            always @(posedge clk_rxoutclk_bufg[ch] or negedge sysrst_glb_n) begin
-                if (!sysrst_glb_n) begin
-                    sc_pend  <= 1'b0;
-                    evt_pend <= 7'd0;
-                end else if (user_rx_data_valid[ch]) begin
-                    if (sc_pend) begin
-                        // 慢控返回 word 已写入，单帧结束
-                        sc_pend <= 1'b0;
-                    end else if (evt_pend != 7'd0) begin
-                        evt_pend <= evt_pend - 7'd1;
-                    end else begin
-                        // 空闲：识别帧头
-                        if (user_rx_data[ch*16+:16] == 16'hFFF1) begin
-                            sc_pend <= 1'b1;
-                        end else if (user_rx_data[ch*16+:16] == 16'hFFF0) begin
-                            if (~adc_fifo_prog_full) begin
-                                evt_pend <= EVT_WORDS[6:0];  // 剩余空间>=1整事件，启用本事件
-                            end
-                            // else: 空间不足，evt_pend 保持 0 → 本帧全部丢弃，等下一个 FFF0
-                        end
-                    end
-                end
-            end
+             always @(posedge clk_rxoutclock_bufg[ch] or negedge sysrst_glb_n) begin
+                 if (!sysrst_glb_n) begin
+                     sc_pend  <= 1'b0;
+                     evt_pend <= 7'd0;
+                     ack3_pend <= 1'b0;
+                 end else if (user_rx_data_valid[ch]) begin
+                     if (sc_pend) begin
+                         sc_pend <= 1'b0;
+                     end else if (evt_pend != 7'd0) begin
+                         evt_pend <= evt_pend - 7'd1;
+                     end else begin
+                         // 空闲：识别帧头
+                         if (user_rx_data[ch*16+:16] == 16'hFFF3) begin
+                             ack3_pend <= 1'b1;
+                         end else if (user_rx_data[ch*16+:16] == 16'hFFF1) begin
+                             sc_pend <= 1'b1;
+                         end else if (user_rx_data[ch*16+:16] == 16'hFFF0) begin
+                             if (~adc_fifo_prog_full) begin
+                                 evt_pend <= EVT_WORDS[6:0];
+                             end
+                         end
+                     end
+                 end
+             end
 
-            // 慢控返回 FIFO
-            wire sc_fifo_full, sc_wr_rst_busy, sc_rd_rst_busy;
-            fifo_sc_tx u_fifo_sc_tx (
-                .rst        (~sysrst_glb_n),
-                .wr_clk     (clk_rxoutclk_bufg[ch]),
-                .rd_clk     (be_clk_txoutclk_bufg),
-                .din        (user_rx_data[ch*16+:16]),
-                .wr_en      (sc_wr_this && ~sc_fifo_full && ~sc_wr_rst_busy),
-                .rd_en      (sc_rd_en[ch]),
-                .dout       (sc_fifo_dout[ch*16+:16]),
-                .full       (sc_fifo_full),
-                .empty      (sc_fifo_empty[ch]),
-                .valid      (sc_fifo_valid[ch]),
-                .wr_rst_busy(sc_wr_rst_busy),
-                .rd_rst_busy(sc_rd_rst_busy)
-            );
+             // 慢控返回 FIFO
+             wire sc_fifo_full, sc_wr_rst_busy, sc_rd_rst_busy;
+             fifo_sc_tx u_fifo_sc_tx (
+                 .rst        (~sysrst_glb_n),
+                 .wr_clk     (clk_rxoutclock_bufg[ch]),
+                 .rd_clk     (be_clk_txoutclock_bufg),
+                 .din        (user_rx_data[ch*16+:16]),
+                 .wr_en      (sc_wr_this && ~sc_fifo_full && ~sc_wr_rst_busy),
+                 .rd_en      (sc_rd_en[ch]),
+                 .dout       (sc_fifo_dout[ch*16+:16]),
+                 .full       (sc_fifo_full),
+                 .empty      (sc_fifo_empty[ch]),
+                 .valid      (sc_fifo_valid[ch]),
+                 .wr_rst_busy(sc_wr_rst_busy),
+                 .rd_rst_busy(sc_rd_rst_busy)
+             );
+
+             // W-packet ack FIFO
+             wire ack3_fifo_full, ack3_wr_rst_busy, ack3_rd_rst_busy;
+             fifo_sc_tx u_fifo_ack_tx (
+                 .rst        (~sysrst_glb_n),
+                 .wr_clk     (clk_rxoutclock_bufg[ch]),
+                 .rd_clk     (be_clk_txoutclock_bufg),
+                 .din        (user_rx_data[ch*16+:16]),
+                 .wr_en      (ack3_pend && ~ack3_fifo_full && ~ack3_wr_rst_busy),
+                 .rd_en      (ack3_rd_en[ch]),
+                 .dout       (ack3_fifo_dout[ch*16+:16]),
+                 .full       (ack3_fifo_full),
+                 .empty      (ack3_fifo_empty[ch]),
+                 .valid      (ack3_fifo_valid[ch]),
+                 .wr_rst_busy(ack3_wr_rst_busy),
+                 .rd_rst_busy(ack3_rd_rst_busy)
+             );
 
             // ADC 事件 FIFO（prog_empty_thresh = EVT_WORDS, prog_full_thresh = ADC_FIFO_FULL_THRESH）
             wire adc_fifo_full, adc_fifo_prog_full, adc_wr_rst_busy, adc_rd_rst_busy;
@@ -452,20 +478,22 @@ module main (
     // PTP read control
     //--------------------------------
     // BE GT TX 轮询发送状态机（be_clk_txoutclk_bufg 域）
-    //   优先级: PTP > 慢控返回(fifo_sc_tx) > ADC 事件(fifo_adc) > 空闲(bc3c)
+     //   优先级: PTP > W-packet ack > 慢控返回 > ADC 事件 > 空闲(bc3c)
     //   仲裁 round-robin 扫描 rr_idx[0..7]
     //--------------------------------
-    localparam BE_TX_IDLE = 3'd0;
-    localparam BE_TX_SC_HDR = 3'd1;
-    localparam BE_TX_SC_DATA = 3'd2;
-    localparam BE_TX_AD_HDR = 3'd3;  // FFF0 帧头
-    localparam BE_TX_AD_BOARD = 3'd4;  // 板号头
-    localparam BE_TX_AD_DATA = 3'd5;  // EVT_WORDS 个数据 word
-    localparam BE_TX_PTP_HDR = 3'd6;  // PTP 帧头 FFF2
-    localparam BE_TX_PTP_DATA = 3'd7;  // PTP 固定读 6 次
+     localparam BE_TX_IDLE = 4'd0;
+     localparam BE_TX_ACK_HDR = 4'd1;
+     localparam BE_TX_ACK_DATA = 4'd2;
+     localparam BE_TX_SC_HDR = 4'd3;
+     localparam BE_TX_SC_DATA = 4'd4;
+     localparam BE_TX_AD_HDR = 4'd5;  // FFF0 帧头
+     localparam BE_TX_AD_BOARD = 4'd6;  // 板号头
+     localparam BE_TX_AD_DATA = 4'd7;  // EVT_WORDS 个数据 word
+     localparam BE_TX_PTP_HDR = 4'd8;  // PTP 帧头 FFF2
+     localparam BE_TX_PTP_DATA = 4'd9;  // PTP 固定读 6 次
 
-    reg [2:0] be_tx_state;
-    reg [2:0] rr_idx;
+     reg [3:0] be_tx_state;
+     reg [2:0] rr_idx;
     reg [6:0] evt_tx_cnt;
     reg [2:0] ptp_tx_cnt;
 
@@ -475,27 +503,46 @@ module main (
             rr_idx              <= 3'd0;
             evt_tx_cnt          <= 7'd0;
             ptp_tx_cnt          <= 3'd0;
-            sc_rd_en            <= 8'd0;
+             sc_rd_en            <= 8'd0;
             adc_rd_en           <= 8'd0;
+            ack3_rd_en          <= 8'd0;
             ptp_read_enable     <= 8'd0;
             be_gt_tx_data       <= 16'hbc3c;
             be_gt_tx_data_valid <= 1'b0;
         end else begin
             case (be_tx_state)
-                BE_TX_IDLE: begin
+                 BE_TX_IDLE: begin
                     sc_rd_en            <= 8'd0;
                     adc_rd_en           <= 8'd0;
                     ptp_read_enable     <= 8'd0;
+                    ack3_rd_en          <= 8'd0;
                     be_gt_tx_data_valid <= 1'b0;
                     be_gt_tx_data       <= 16'hbc3c;
                     if (~ptp_read_empty[rr_idx]) begin
                         be_tx_state <= BE_TX_PTP_HDR;
+                    end else if (~ack3_fifo_empty[rr_idx]) begin
+                        be_tx_state <= BE_TX_ACK_HDR;
                     end else if (~sc_fifo_empty[rr_idx]) begin
                         be_tx_state <= BE_TX_SC_HDR;
                     end else if (~adc_fifo_prog_empty[rr_idx]) begin
                         be_tx_state <= BE_TX_AD_HDR;
                     end else begin
                         rr_idx <= rr_idx + 3'd1;
+                    end
+                end
+                // ---- W-packet ack：FFF3 + 1 word ----
+                BE_TX_ACK_HDR: begin
+                    be_gt_tx_data       <= 16'hFFF3;
+                    be_gt_tx_data_valid <= 1'b1;
+                    ack3_rd_en          <= (8'd1 << rr_idx);
+                    be_tx_state         <= BE_TX_ACK_DATA;
+                end
+                BE_TX_ACK_DATA: begin
+                    ack3_rd_en <= 8'd0;
+                    be_gt_tx_data_valid <= ack3_fifo_valid[rr_idx];
+                    be_gt_tx_data <= ack3_fifo_dout[rr_idx*16+:16];
+                    if (ack3_fifo_valid[rr_idx]) begin
+                        be_tx_state <= BE_TX_IDLE;
                     end
                 end
                 // ---- 慢控返回：FFF1 + 1 word ----
