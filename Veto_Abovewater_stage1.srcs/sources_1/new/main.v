@@ -374,18 +374,22 @@ module main (
                          sc_pend <= 1'b0;
                      end else if (evt_pend != 7'd0) begin
                          evt_pend <= evt_pend - 7'd1;
-                     end else begin
-                         // 空闲：识别帧头
-                         if (user_rx_data[ch*16+:16] == 16'hFFF3) begin
-                             ack3_pend <= 1'b1;
-                         end else if (user_rx_data[ch*16+:16] == 16'hFFF1) begin
-                             sc_pend <= 1'b1;
-                         end else if (user_rx_data[ch*16+:16] == 16'hFFF0) begin
-                             if (~adc_fifo_prog_full) begin
-                                 evt_pend <= EVT_WORDS[6:0];
-                             end
-                         end
-                     end
+                      end else begin
+                          // 空闲：识别帧头
+                          if (user_rx_data[ch*16+:16] == 16'hFFF3) begin
+                              ack3_pend <= 1'b1;
+                          end else if (user_rx_data[ch*16+:16] == 16'hFFF1) begin
+                              sc_pend <= 1'b1;
+                              ack3_pend <= 1'b0;
+                          end else if (user_rx_data[ch*16+:16] == 16'hFFF0) begin
+                              if (~adc_fifo_prog_full) begin
+                                  evt_pend <= EVT_WORDS[6:0];
+                              end
+                              ack3_pend <= 1'b0;
+                          end else begin
+                              ack3_pend <= 1'b0;
+                          end
+                      end
                  end
              end
 
@@ -537,10 +541,10 @@ module main (
                     ack3_rd_en          <= (8'd1 << rr_idx);
                     be_tx_state         <= BE_TX_ACK_DATA;
                 end
-                BE_TX_ACK_DATA: begin
+                 BE_TX_ACK_DATA: begin
                     ack3_rd_en <= 8'd0;
                     be_gt_tx_data_valid <= ack3_fifo_valid[rr_idx];
-                    be_gt_tx_data <= ack3_fifo_dout[rr_idx*16+:16];
+                    be_gt_tx_data <= 16'hFFFF;
                     if (ack3_fifo_valid[rr_idx]) begin
                         be_tx_state <= BE_TX_IDLE;
                     end
