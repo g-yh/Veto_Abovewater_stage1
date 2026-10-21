@@ -74,6 +74,25 @@ module main (
     output wire FAN_PWM
 );
 
+    //--------------------------------
+    // FE 侧（8ch）GTX 接口信号前置声明
+    //   Verilog 要求先声明后使用。下面 MCX_CLK0/1 与 gt_link_up_led1 会在
+    //   100 行以内就引用这些信号，若声明放在 interface_gtx_8ch 例化之前，
+    //   综合器会建立宽度为 1 的隐式网络并与之冲突。
+    //--------------------------------
+    wire [  7:0] rx_pma_rst_n;
+    wire [  7:0] clk_txoutclk_bufg;
+    wire [  7:0] clk_rxoutclk_bufg;
+    wire [127:0] gt_tx_data;
+    wire [  7:0] gt_tx_data_valid;
+    wire [127:0] gt_rx_data;
+    wire [  7:0] gt_rx_data_valid;
+    wire [  7:0] gtx_cpll_is_lock;
+    wire [  7:0] rx_reset_done;
+    wire [  7:0] gt_link_up;
+    wire [ 15:0] rx_data_is_comma;
+    wire [  7:0] gtx_rx_error;
+
     assign MCX_CLK0 = clk_rxoutclk_bufg[0];
     assign MCX_CLK1 = clk_txoutclk_bufg[0];
 
@@ -96,7 +115,7 @@ module main (
 
     // assign gt_link_up_led1 = &gt_link_up;
     assign gt_link_up_led1 = gt_link_up[0];
-    assign gt_link_up_led2 = be_gt_link_up;
+    // assign gt_link_up_led2 = be_gt_link_up;   // be_gt_link_up 在下方声明后再驱动
 
     // 200M clk input buff
     IBUFDS #(
@@ -122,17 +141,17 @@ module main (
         .clk_in1 (CLK_200M)
     );
 
-    assign ad9528_rst_n = pll_locked;
-    assign sysrst_glb_n = pll_locked;
+    wire sysrst_glb_n;
 
+    assign ad9528_rst_n = pll_locked;
     assign ad9253_spi_rst_n = pll_locked;
     assign cfg_ad9528 = pll_locked;
 
-    // vio_0 vio_0_inst (
-    //     .clk(CLK_200M),
-    //     .probe_out0(ad9253_spi_rst_n),
-    //     .probe_out1(cfg_ad9528)
-    // );
+    // assign sysrst_glb_n = pll_locked;
+    vio_0 vio_0_inst (
+        .clk(CLK_200M),
+        .probe_out0(sysrst_glb_n)
+    );
 
     // localparam integer CNT_50MS = 250_000;
     // reg [18:0] cnt;
@@ -182,19 +201,7 @@ module main (
         .ODIV2()
     );
 
-    wire [  7:0] rx_pma_rst_n;
-    wire [  7:0] clk_txoutclk_bufg;
-    wire [  7:0] clk_rxoutclk_bufg;
-    wire [127:0] gt_tx_data;
-    wire [  7:0] gt_tx_data_valid;
-    wire [127:0] gt_rx_data;
-    wire [  7:0] gt_rx_data_valid;
-    wire [  7:0] gtx_cpll_is_lock;
-    wire [  7:0] rx_reset_done;
-    wire [  7:0] gt_link_up;
-    wire [ 15:0] rx_data_is_comma;
-    wire [  7:0] gtx_rx_error;
-
+    // FE 侧信号已在前置声明处声明，此处不再重复
     interface_gtx_8ch instance_gtx_interface_8ch_separate (
         .rx_pma_rst_n     (rx_pma_rst_n),
         .clk_drp_100M     (CLK_100M),
@@ -281,26 +288,69 @@ module main (
     // debug
     wire [ 31:0] ptp_flags;
 
-     //--------------------------------
-     // 每通道接收返回 FIFO（写侧 clk_rxoutclock_bufg[ch]，读侧 be_clk_txoutclock_bufg）
-     //   fifo_sc_tx: 慢控返回（1 word/帧），fifo_adc: ADC 事件（EVT_WORDS words/帧）
-     //   fifo_ack_tx: W-packet ack 返回（0xFFF3 + 1 word）
-     //--------------------------------
-     reg  [  7:0] sc_rd_en;
-     wire [  7:0] sc_fifo_empty;
-     wire [  7:0] sc_fifo_valid;
-     wire [127:0] sc_fifo_dout;
+    //--------------------------------
+    // BE 侧（stage2 链路）信号前置声明
+    //   这些信号由 interface_gtx_1ch 产生，但在此处就要被 generate 内的
+    //   FIFO（rd_clk）与 time_sync_manager（clk_uart）引用。
+    //   Verilog 要求先声明后使用，否则会被综合器当成隐式 wire（宽度 1、无驱动），
+    //   导致 FIFO 的 rd_clk 悬空 -> wr_rst_busy 恒为 1。
+    //--------------------------------
+    wire be_clk_txoutclk_bufg;
+    wire be_clk_rxoutclk_bufg;
+    reg  [15:0] be_gt_tx_data;
+    reg         be_gt_tx_data_valid;
+    wire [15:0] be_gt_rx_data;
+    wire        be_gt_rx_data_valid;
+    wire        be_gtx_cpll_is_lock;
+    wire        be_gt_link_up;
+    wire [ 1:0] be_rx_data_is_comma;
+    wire        be_gtx_rx_error;
 
-     reg  [  7:0] ack3_rd_en;
-     wire [  7:0] ack3_fifo_empty;
-     wire [  7:0] ack3_fifo_valid;
-     wire [127:0] ack3_fifo_dout;
+    assign gt_link_up_led2 = be_gt_link_up;
+
+    //--------------------------------
+    // 每通道接收返回 FIFO（写侧 clk_rxoutclk_bufg[ch]，读侧 be_clk_txoutclk_bufg）
+    //   fifo_sc_tx: 慢控返回（1 word/帧），fifo_adc: ADC 事件（EVT_WORDS words/帧）
+    //   fifo_ack_tx: W-packet ack 返回（0xFFF3 + 1 word）
+    //--------------------------------
+    reg  [  7:0] sc_rd_en;
+    wire [  7:0] sc_fifo_empty;
+    wire [  7:0] sc_fifo_valid;
+    wire [127:0] sc_fifo_dout;
+
+    reg  [  7:0] ack_rd_en;
+    wire [  7:0] ack_fifo_empty;
+    wire [  7:0] ack_fifo_valid;
+    wire [127:0] ack_fifo_dout;
 
     reg  [  7:0] adc_rd_en;
     wire [  7:0] adc_fifo_empty;
     wire [  7:0] adc_fifo_prog_empty;
     wire [  7:0] adc_fifo_valid;
     wire [127:0] adc_fifo_dout;
+
+    //--------------------------------
+    // 每通道接收侧状态（generate 内使用，索引 [ch]）
+    //   0..7 对应 gen_time_sync 的 8 个通道
+    //--------------------------------
+    reg  [  7:0] sc_pend;  // 慢控返回：已收 FFF1，待收 1 个 word
+    reg  [  7:0] ack_pend;  // W-packet ack：已收 FFF3，待收 1 个 word
+    reg  [ 56:0] evt_pend;  // ADC 事件：已收 FFF0，待收 EVT_WORDS 个 word
+
+    wire [  7:0] sc_wr_this;  // 本拍写 sc FIFO
+    wire [  7:0] adc_wr_this;  // 本拍写 adc FIFO
+
+    wire [  7:0] sc_fifo_full;
+    wire [  7:0] sc_wr_rst_busy;
+    wire [  7:0] sc_rd_rst_busy;
+    wire [  7:0] ack_fifo_full;
+    wire [  7:0] ack_wr_rst_busy;
+    wire [  7:0] ack_rd_rst_busy;
+    wire [  7:0] adc_fifo_full;
+    wire [  7:0] adc_fifo_prog_full;
+    wire [  7:0] adc_wr_rst_busy;
+    wire [  7:0] adc_rd_rst_busy;
+
 
     genvar ch;
     generate
@@ -311,6 +361,7 @@ module main (
                 .clk_sys_400M     (clk_400M),
                 .clk_drp_100M     (CLK_100M),
                 .clk_uart         (be_clk_txoutclk_bufg),
+                .fifo_rst_n       (sysrst_glb_n),
 
                 // gtx data
                 .gt_tx_data         (gt_tx_data[ch*16+:16]),
@@ -326,8 +377,8 @@ module main (
                 .user_rx_data_valid(user_rx_data_valid[ch]),
 
                 // timestamp
-                .timestamp_tx   (ptp_timestamp_tx[ch]),
-                .timestamp_rx   (ptp_timestamp_rx[ch]),
+                .timestamp_tx   (ptp_timestamp_tx[ch*64+:64]),
+                .timestamp_rx   (ptp_timestamp_rx[ch*64+:64]),
                 .ptp_start      (ptp_start[ch]),
                 .ptp_value      (timestamp_rx_delay[ch*16+:16]),
                 .ptp_value_valid(timestamp_rx_delay_valid[ch]),
@@ -346,135 +397,104 @@ module main (
                 .gt_rx_rst_done(rx_reset_done[ch]),
                 .gt_link_up    (gt_link_up[ch]),
 
-                .flags(ptp_flags[ch])
+                .flags(ptp_flags[ch*4+:4])
             );
 
-             //--------------------------------
-             // 接收帧头解析 + FIFO 写入（clk_rxoutclock_bufg[ch] 域）
-             //   user_rx_data 为 PTP 剥离后的流：
-             //     0xFFF3 -> W-packet ack -> fifo_ack_tx
-             //     0xFFF1 -> 1 个慢控返回 word -> fifo_sc_tx
-             //     0xFFF0 -> EVT_WORDS 个 ADC word -> fifo_adc
-             //     其它(含 bc3c) -> 忽略
-             //--------------------------------
-             reg        sc_pend;
-             reg  [6:0] evt_pend;
-             reg        ack3_pend;
 
-             wire       sc_wr_this = user_rx_data_valid[ch] && sc_pend;
-             wire       adc_wr_this = user_rx_data_valid[ch] && (evt_pend != 7'd0);
+            // --------------------------------
+            // 接收帧头解析 + FIFO 写入（clk_rxoutclk_bufg[ch] 域）
+            //   user_rx_data 为 PTP 剥离后的流：
+            //     0xFFF3 -> W-packet ack -> fifo_ack_tx
+            //     0xFFF1 -> 1 个慢控返回 word -> fifo_sc_tx
+            //     0xFFF0 -> EVT_WORDS 个 ADC word -> fifo_adc
+            //     其它(含 bc3c) -> 忽略
+            // --------------------------------
+            assign sc_wr_this[ch]  = user_rx_data_valid[ch] && sc_pend[ch];
+            assign adc_wr_this[ch] = user_rx_data_valid[ch] && (evt_pend[ch*7+:7] != 7'd0);
 
-             always @(posedge clk_rxoutclock_bufg[ch] or negedge sysrst_glb_n) begin
-                 if (!sysrst_glb_n) begin
-                     sc_pend  <= 1'b0;
-                     evt_pend <= 7'd0;
-                     ack3_pend <= 1'b0;
-                 end else if (user_rx_data_valid[ch]) begin
-                     if (sc_pend) begin
-                         sc_pend <= 1'b0;
-                     end else if (evt_pend != 7'd0) begin
-                         evt_pend <= evt_pend - 7'd1;
-                      end else begin
-                          // 空闲：识别帧头
-                          if (user_rx_data[ch*16+:16] == 16'hFFF3) begin
-                              ack3_pend <= 1'b1;
-                          end else if (user_rx_data[ch*16+:16] == 16'hFFF1) begin
-                              sc_pend <= 1'b1;
-                              ack3_pend <= 1'b0;
-                          end else if (user_rx_data[ch*16+:16] == 16'hFFF0) begin
-                              if (~adc_fifo_prog_full) begin
-                                  evt_pend <= EVT_WORDS[6:0];
-                              end
-                              ack3_pend <= 1'b0;
-                          end else begin
-                              ack3_pend <= 1'b0;
-                          end
-                      end
-                 end
-             end
+            always @(posedge clk_rxoutclk_bufg[ch] or negedge sysrst_glb_n) begin
+                if (!sysrst_glb_n) begin
+                    sc_pend[ch] <= 1'b0;
+                    evt_pend[ch*7+:7] <= 7'd0;
+                    ack_pend[ch] <= 1'b0;
+                end else if (user_rx_data_valid[ch]) begin
+                    if (ack_pend[ch]) begin
+                        // 上一拍已识别 FFF3，本拍是 ACK 数据字；消费掉标志
+                        ack_pend[ch] <= 1'b0;
+                    end else if (sc_pend[ch]) begin
+                        sc_pend[ch] <= 1'b0;
+                    end else if (evt_pend[ch*7+:7] != 7'd0) begin
+                        evt_pend[ch*7+:7] <= evt_pend[ch*7+:7] - 7'd1;
+                    end else begin
+                        // 空闲：识别帧头
+                        if (user_rx_data[ch*16+:16] == 16'hFFF3) begin
+                            ack_pend[ch] <= 1'b1;
+                        end else if (user_rx_data[ch*16+:16] == 16'hFFF1) begin
+                            sc_pend[ch]  <= 1'b1;
+                            ack_pend[ch] <= 1'b0;
+                        end else if (user_rx_data[ch*16+:16] == 16'hFFF0) begin
+                            if (~adc_fifo_prog_full[ch]) begin
+                                evt_pend[ch*7+:7] <= EVT_WORDS[6:0];
+                            end
+                            ack_pend[ch] <= 1'b0;
+                        end else begin
+                            ack_pend[ch] <= 1'b0;
+                        end
+                    end
+                end
+            end
 
-             // 慢控返回 FIFO
-             wire sc_fifo_full, sc_wr_rst_busy, sc_rd_rst_busy;
-             fifo_sc_tx u_fifo_sc_tx (
-                 .rst        (~sysrst_glb_n),
-                 .wr_clk     (clk_rxoutclock_bufg[ch]),
-                 .rd_clk     (be_clk_txoutclock_bufg),
-                 .din        (user_rx_data[ch*16+:16]),
-                 .wr_en      (sc_wr_this && ~sc_fifo_full && ~sc_wr_rst_busy),
-                 .rd_en      (sc_rd_en[ch]),
-                 .dout       (sc_fifo_dout[ch*16+:16]),
-                 .full       (sc_fifo_full),
-                 .empty      (sc_fifo_empty[ch]),
-                 .valid      (sc_fifo_valid[ch]),
-                 .wr_rst_busy(sc_wr_rst_busy),
-                 .rd_rst_busy(sc_rd_rst_busy)
-             );
+            // 慢控返回 FIFO
+            fifo_sc_tx u_fifo_sc_tx (
+                .rst        (~(gt_link_up[ch] && sysrst_glb_n)),
+                .wr_clk     (clk_rxoutclk_bufg[ch]),
+                .rd_clk     (be_clk_txoutclk_bufg),
+                .din        (user_rx_data[ch*16+:16]),
+                .wr_en      (sc_wr_this[ch] && ~sc_fifo_full[ch] && ~sc_wr_rst_busy[ch]),
+                .rd_en      (sc_rd_en[ch]),
+                .dout       (sc_fifo_dout[ch*16+:16]),
+                .full       (sc_fifo_full[ch]),
+                .empty      (sc_fifo_empty[ch]),
+                .valid      (sc_fifo_valid[ch]),
+                .wr_rst_busy(sc_wr_rst_busy[ch]),
+                .rd_rst_busy(sc_rd_rst_busy[ch])
+            );
 
-             // W-packet ack FIFO
-             wire ack3_fifo_full, ack3_wr_rst_busy, ack3_rd_rst_busy;
-             fifo_sc_tx u_fifo_ack_tx (
-                 .rst        (~sysrst_glb_n),
-                 .wr_clk     (clk_rxoutclock_bufg[ch]),
-                 .rd_clk     (be_clk_txoutclock_bufg),
-                 .din        (user_rx_data[ch*16+:16]),
-                 .wr_en      (ack3_pend && ~ack3_fifo_full && ~ack3_wr_rst_busy),
-                 .rd_en      (ack3_rd_en[ch]),
-                 .dout       (ack3_fifo_dout[ch*16+:16]),
-                 .full       (ack3_fifo_full),
-                 .empty      (ack3_fifo_empty[ch]),
-                 .valid      (ack3_fifo_valid[ch]),
-                 .wr_rst_busy(ack3_wr_rst_busy),
-                 .rd_rst_busy(ack3_rd_rst_busy)
-             );
+            // ack
+            fifo_sc_tx u_fifo_ack_tx (
+                .rst        (~(gt_link_up[ch] && sysrst_glb_n)),
+                .wr_clk     (clk_rxoutclk_bufg[ch]),
+                .rd_clk     (be_clk_txoutclk_bufg),
+                .din        (user_rx_data[ch*16+:16]),
+                .wr_en      (ack_pend[ch] && ~ack_fifo_full[ch] && ~ack_wr_rst_busy[ch]),
+                .rd_en      (ack_rd_en[ch]),
+                .dout       (ack_fifo_dout[ch*16+:16]),
+                .full       (ack_fifo_full[ch]),
+                .empty      (ack_fifo_empty[ch]),
+                .valid      (ack_fifo_valid[ch]),
+                .wr_rst_busy(ack_wr_rst_busy[ch]),
+                .rd_rst_busy(ack_rd_rst_busy[ch])
+            );
 
             // ADC 事件 FIFO（prog_empty_thresh = EVT_WORDS, prog_full_thresh = ADC_FIFO_FULL_THRESH）
-            wire adc_fifo_full, adc_fifo_prog_full, adc_wr_rst_busy, adc_rd_rst_busy;
             fifo_adc u_fifo_adc (
-                .rst              (~sysrst_glb_n),
+                .rst              (~(gt_link_up[ch] && sysrst_glb_n)),
                 .wr_clk           (clk_rxoutclk_bufg[ch]),
                 .rd_clk           (be_clk_txoutclk_bufg),
                 .din              (user_rx_data[ch*16+:16]),
-                .wr_en            (adc_wr_this && ~adc_fifo_full && ~adc_wr_rst_busy),
+                .wr_en            (adc_wr_this[ch] && ~adc_fifo_full[ch] && ~adc_wr_rst_busy[ch]),
                 .rd_en            (adc_rd_en[ch]),
                 .prog_empty_thresh(EVT_WORDS),
                 .prog_full_thresh (ADC_FIFO_FULL_THRESH),
                 .dout             (adc_fifo_dout[ch*16+:16]),
-                .full             (adc_fifo_full),
+                .full             (adc_fifo_full[ch]),
                 .empty            (adc_fifo_empty[ch]),
-                .prog_full        (adc_fifo_prog_full),
+                .prog_full        (adc_fifo_prog_full[ch]),
                 .prog_empty       (adc_fifo_prog_empty[ch]),
                 .valid            (adc_fifo_valid[ch]),
-                .wr_rst_busy      (adc_wr_rst_busy),
-                .rd_rst_busy      (adc_rd_rst_busy)
+                .wr_rst_busy      (adc_wr_rst_busy[ch]),
+                .rd_rst_busy      (adc_rd_rst_busy[ch])
             );
-
-            //--------------------------------
-            // ILA debug: FE RX path, channel 0 only (clk_rxoutclk_bufg[0] domain)
-            //--------------------------------
-            // if (ch == 0) begin : gen_ila_fe_rx
-            //     ila_fe_rx u_ila_fe_rx (
-            //         .clk   (clk_rxoutclk_bufg[ch]),
-            //         .probe0 (user_rx_data[ch*16+:16]),
-            //         .probe1 (user_rx_data_valid[ch]),
-            //         .probe2 (sc_pend),
-            //         .probe3 (evt_pend[6:0]),
-            //         .probe4 (sc_wr_this),
-            //         .probe5 (adc_wr_this),
-            //         .probe6 (adc_fifo_prog_full),
-            //         .probe7 (adc_fifo_full),
-            //         .probe8 (adc_fifo_empty[ch]),
-            //         .probe9 (sc_fifo_empty[ch]),
-            //         .probe10(sc_fifo_full),
-            //         .probe11(gt_link_up[ch]),
-            //         .probe12(gtx_cpll_is_lock[ch]),
-            //         .probe13(rx_reset_done[ch]),
-            //         .probe14(gtx_rx_error[ch]),
-            //         .probe15(rx_data_is_comma[ch*2+:2]),
-            //         .probe16(ptp_flags[ch*4+:4]),
-            //         .probe17(gt_rx_data[ch*16+:16]),
-            //         .probe18(gt_rx_data_valid[ch])
-            //     );
-            // end
         end
     endgenerate
 
@@ -482,49 +502,54 @@ module main (
     // PTP read control
     //--------------------------------
     // BE GT TX 轮询发送状态机（be_clk_txoutclk_bufg 域）
-     //   优先级: PTP > W-packet ack > 慢控返回 > ADC 事件 > 空闲(bc3c)
+    //   优先级: PTP > W-packet ack > 慢控返回 > ADC 事件 > 空闲(bc3c)
     //   仲裁 round-robin 扫描 rr_idx[0..7]
     //--------------------------------
-     localparam BE_TX_IDLE = 4'd0;
-     localparam BE_TX_ACK_HDR = 4'd1;
-     localparam BE_TX_ACK_DATA = 4'd2;
-     localparam BE_TX_SC_HDR = 4'd3;
-     localparam BE_TX_SC_DATA = 4'd4;
-     localparam BE_TX_AD_HDR = 4'd5;  // FFF0 帧头
-     localparam BE_TX_AD_BOARD = 4'd6;  // 板号头
-     localparam BE_TX_AD_DATA = 4'd7;  // EVT_WORDS 个数据 word
-     localparam BE_TX_PTP_HDR = 4'd8;  // PTP 帧头 FFF2
-     localparam BE_TX_PTP_DATA = 4'd9;  // PTP 固定读 6 次
+    localparam BE_TX_IDLE = 4'd0;
+    localparam BE_TX_ACK_HDR = 4'd1;
+    localparam BE_TX_ACK_DATA = 4'd2;
+    localparam BE_TX_SC_HDR = 4'd3;
+    localparam BE_TX_SC_DATA = 4'd4;
+    localparam BE_TX_AD_HDR = 4'd5;  // FFF0 帧头
+    localparam BE_TX_AD_BOARD = 4'd6;  // 板号头
+    localparam BE_TX_AD_DATA = 4'd7;  // EVT_WORDS 个数据 word
+    localparam BE_TX_PTP_HDR = 4'd8;  // PTP 帧头 FFF2
+    localparam BE_TX_PTP_DATA = 4'd9;  // 单个 FFF2 帧携带完整 48 字节
+    localparam [5:0] BE_PTP_FRAME_BYTES = 6'd48;
+    localparam BE_PTP_WAIT_MAX = 14'd10000;  // 125 MHz 下约 80 us
 
-     reg [3:0] be_tx_state;
-     reg [2:0] rr_idx;
+    reg [3:0] be_tx_state;
+    reg [2:0] rr_idx;
     reg [6:0] evt_tx_cnt;
-    reg [2:0] ptp_tx_cnt;
+    reg [5:0] ptp_tx_cnt;
+    reg [13:0] ptp_wait_cnt;
 
     always @(posedge be_clk_txoutclk_bufg or negedge sysrst_glb_n) begin
         if (!sysrst_glb_n) begin
             be_tx_state         <= BE_TX_IDLE;
             rr_idx              <= 3'd0;
             evt_tx_cnt          <= 7'd0;
-            ptp_tx_cnt          <= 3'd0;
-             sc_rd_en            <= 8'd0;
+            ptp_tx_cnt          <= 6'd0;
+            ptp_wait_cnt        <= 14'd0;
+            sc_rd_en            <= 8'd0;
             adc_rd_en           <= 8'd0;
-            ack3_rd_en          <= 8'd0;
+            ack_rd_en           <= 8'd0;
             ptp_read_enable     <= 8'd0;
             be_gt_tx_data       <= 16'hbc3c;
             be_gt_tx_data_valid <= 1'b0;
         end else begin
             case (be_tx_state)
-                 BE_TX_IDLE: begin
+                BE_TX_IDLE: begin
                     sc_rd_en            <= 8'd0;
                     adc_rd_en           <= 8'd0;
                     ptp_read_enable     <= 8'd0;
-                    ack3_rd_en          <= 8'd0;
+                    ack_rd_en           <= 8'd0;
                     be_gt_tx_data_valid <= 1'b0;
                     be_gt_tx_data       <= 16'hbc3c;
+                    ptp_wait_cnt        <= 14'd0;
                     if (~ptp_read_empty[rr_idx]) begin
                         be_tx_state <= BE_TX_PTP_HDR;
-                    end else if (~ack3_fifo_empty[rr_idx]) begin
+                    end else if (~ack_fifo_empty[rr_idx]) begin
                         be_tx_state <= BE_TX_ACK_HDR;
                     end else if (~sc_fifo_empty[rr_idx]) begin
                         be_tx_state <= BE_TX_SC_HDR;
@@ -538,15 +563,18 @@ module main (
                 BE_TX_ACK_HDR: begin
                     be_gt_tx_data       <= 16'hFFF3;
                     be_gt_tx_data_valid <= 1'b1;
-                    ack3_rd_en          <= (8'd1 << rr_idx);
+                    ack_rd_en           <= (8'd1 << rr_idx);
                     be_tx_state         <= BE_TX_ACK_DATA;
                 end
-                 BE_TX_ACK_DATA: begin
-                    ack3_rd_en <= 8'd0;
-                    be_gt_tx_data_valid <= ack3_fifo_valid[rr_idx];
-                    be_gt_tx_data <= 16'hFFFF;
-                    if (ack3_fifo_valid[rr_idx]) begin
-                        be_tx_state <= BE_TX_IDLE;
+                BE_TX_ACK_DATA: begin
+                    ack_rd_en <= 8'd0;
+                    if (ack_fifo_valid[rr_idx]) begin
+                        be_gt_tx_data       <= 16'hFFFF;
+                        be_gt_tx_data_valid <= 1'b1;
+                        be_tx_state         <= BE_TX_IDLE;
+                    end else begin
+                        be_gt_tx_data       <= 16'hbc3c;
+                        be_gt_tx_data_valid <= 1'b0;
                     end
                 end
                 // ---- 慢控返回：FFF1 + 1 word ----
@@ -558,10 +586,13 @@ module main (
                 end
                 BE_TX_SC_DATA: begin
                     sc_rd_en <= 8'd0;
-                    be_gt_tx_data_valid <= sc_fifo_valid[rr_idx];
-                    be_gt_tx_data <= sc_fifo_dout[rr_idx*16+:16];
                     if (sc_fifo_valid[rr_idx]) begin
-                        be_tx_state <= BE_TX_IDLE;
+                        be_gt_tx_data       <= sc_fifo_dout[rr_idx*16+:16];
+                        be_gt_tx_data_valid <= 1'b1;
+                        be_tx_state         <= BE_TX_IDLE;
+                    end else begin
+                        be_gt_tx_data       <= 16'hbc3c;
+                        be_gt_tx_data_valid <= 1'b0;
                     end
                 end
                 // ---- ADC 事件：FFF0 + 板号 + EVT_WORDS ----
@@ -589,15 +620,17 @@ module main (
                             evt_tx_cnt <= evt_tx_cnt + 7'd1;
                         end
                     end else begin
+                        be_gt_tx_data       <= 16'hbc3c;
                         be_gt_tx_data_valid <= 1'b0;
                     end
                 end
-                // ---- PTP：最高优先，FFF2 头 + 固定读 6 次 ----
+                // ---- PTP：最高优先，FFF2 头 + 完整 48 字节 ----
                 BE_TX_PTP_HDR: begin
                     be_gt_tx_data       <= 16'hFFF2;
                     be_gt_tx_data_valid <= 1'b1;
                     ptp_read_enable     <= (8'd1 << rr_idx);
-                    ptp_tx_cnt          <= 3'd0;
+                    ptp_tx_cnt          <= 6'd0;
+                    ptp_wait_cnt        <= 14'd0;
                     be_tx_state         <= BE_TX_PTP_DATA;
                 end
                 BE_TX_PTP_DATA: begin
@@ -605,18 +638,30 @@ module main (
                     if (ptp_read_valid[rr_idx]) begin
                         be_gt_tx_data       <= {8'b0, ptp_data[rr_idx*8+:8]};
                         be_gt_tx_data_valid <= 1'b1;
-                        if (ptp_tx_cnt == 3'd5) begin
+                        ptp_wait_cnt        <= 14'd0;
+                        if (ptp_tx_cnt == BE_PTP_FRAME_BYTES - 6'd1) begin
                             ptp_read_enable <= 8'd0;
                             be_tx_state     <= BE_TX_IDLE;
                         end else begin
-                            ptp_tx_cnt <= ptp_tx_cnt + 3'd1;
+                            ptp_tx_cnt <= ptp_tx_cnt + 6'd1;
                         end
-                    end else begin
+                    end else if (ptp_wait_cnt >= BE_PTP_WAIT_MAX) begin
+                        // FIFO 中只残留帧头或部分数据时，不能让 BE 上行永久卡死。
+                        ptp_wait_cnt        <= 14'd0;
+                        ptp_read_enable     <= 8'd0;
+                        be_gt_tx_data       <= 16'hbc3c;
                         be_gt_tx_data_valid <= 1'b0;
+                        be_tx_state         <= BE_TX_IDLE;
+                    end else begin
+                        be_gt_tx_data       <= 16'hbc3c;
+                        be_gt_tx_data_valid <= 1'b0;
+                        ptp_wait_cnt        <= ptp_wait_cnt + 14'd1;
                     end
                 end
                 default: begin
-                    ptp_read_enable <= 8'd0;
+                    ptp_read_enable     <= 8'd0;
+                    be_gt_tx_data       <= 16'hbc3c;
+                    be_gt_tx_data_valid <= 1'b0;
                     be_tx_state <= BE_TX_IDLE;
                 end
             endcase
@@ -636,17 +681,7 @@ module main (
         .ODIV2()
     );
 
-    wire        be_clk_txoutclk_bufg;
-    wire        be_clk_rxoutclk_bufg;
-    reg  [15:0] be_gt_tx_data;
-    reg         be_gt_tx_data_valid;
-    wire [15:0] be_gt_rx_data;
-    wire        be_gt_rx_data_valid;
-    wire        be_gtx_cpll_is_lock;
-    wire        be_gt_link_up;
-    wire [ 1:0] be_rx_data_is_comma;
-    wire        be_gtx_rx_error;
-
+    // BE 侧信号已在前置声明处（generate 之前）声明，此处不再重复
     interface_gtx_1ch instance_interface_gtx_1ch (
         .clk_drp_100M(CLK_100M),
 
@@ -683,7 +718,7 @@ module main (
     //   on that channel's user_tx_data (time_sync sends it on the FE GT TX).
     //--------------------------------
     slow_control_manager instance_slow_control_manager (
-        .rst_n                   (sysrst_glb_n),
+        .rst_n                   (be_gt_link_up && sysrst_glb_n),
         .be_clk_rxoutclk_bufg    (be_clk_rxoutclk_bufg),
         .be_gt_rx_data           (be_gt_rx_data),
         .be_gt_rx_data_valid     (be_gt_rx_data_valid),
@@ -695,6 +730,50 @@ module main (
         .timestamp_rx_delay      (timestamp_rx_delay),
         .timestamp_rx_delay_valid(timestamp_rx_delay_valid)
     );
+
+    //--------------------------------
+    // Slow-control transfer counters
+    //--------------------------------
+    // RX counter: slow-control words received from stage2 on the BE GT RX
+    //   (be_clk_rxoutclk_bufg domain), addr field = {board(1~8), payload}
+    //   detect rising edge of be_gt_rx_data_valid (one per received word)
+    reg [15:0] sc_rx_cnt;
+    reg        be_gt_rx_data_valid_d;
+    always @(posedge be_clk_rxoutclk_bufg or negedge sysrst_glb_n) begin
+        if (!sysrst_glb_n) begin
+            sc_rx_cnt              <= 16'd0;
+            be_gt_rx_data_valid_d  <= 1'b0;
+        end else begin
+            be_gt_rx_data_valid_d <= be_gt_rx_data_valid;
+            if (be_gt_rx_data_valid && !be_gt_rx_data_valid_d)
+                sc_rx_cnt <= sc_rx_cnt + 16'd1;
+        end
+    end
+
+    // TX counter: slow-control words forwarded to underwater on FE TX ch0
+    //   (clk_txoutclk_bufg[0] domain); count rising edges of the valid strobe
+    reg [15:0] sc_tx_uw_cnt;
+    reg        user_tx_data_valid_d;
+    always @(posedge clk_txoutclk_bufg[0] or negedge sysrst_glb_n) begin
+        if (!sysrst_glb_n) begin
+            sc_tx_uw_cnt         <= 16'd0;
+            user_tx_data_valid_d <= 1'b0;
+        end else begin
+            user_tx_data_valid_d <= user_tx_data_valid[0];
+            if (user_tx_data_valid[0] && !user_tx_data_valid_d)
+                sc_tx_uw_cnt <= sc_tx_uw_cnt + 16'd1;
+        end
+    end
+
+    // ACK TX counter: W-packet ack frames (FFF3+FFFF) sent to stage2 on the BE GT TX
+    //   (be_clk_txoutclk_bufg domain), one per BE_TX_ACK_HDR cycle
+    reg [15:0] ack_tx_cnt;
+    always @(posedge be_clk_txoutclk_bufg or negedge sysrst_glb_n) begin
+        if (!sysrst_glb_n)
+            ack_tx_cnt <= 16'd0;
+        else if (be_tx_state == BE_TX_ACK_HDR)
+            ack_tx_cnt <= ack_tx_cnt + 16'd1;
+    end
 
     //--------------------------------
     // ILA debug (added for board bring-up)
@@ -725,12 +804,13 @@ module main (
         .clk   (clk_txoutclk_bufg[0]),
         .probe0(user_tx_data[15:0]),
         .probe1(user_tx_data_valid[0]),
-        .probe2(ptp_start[0]),
-        .probe3(ptp_start_valid[0]),
+        .probe2(ptp_start),
+        .probe3(ptp_start_valid),
         .probe4(timestamp_rx_delay[15:0]),
         .probe5(timestamp_rx_delay_valid[0]),
         .probe6(gt_tx_data[15:0]),
-        .probe7(gt_tx_data_valid[0])
+        .probe7(gt_tx_data_valid[0]),
+        .probe8(sc_tx_uw_cnt)
     );
 
     ila_be_rx u_ila_be_rx (
@@ -740,16 +820,46 @@ module main (
         .probe2(be_rx_data_is_comma[1:0]),
         .probe3(be_gtx_rx_error),
         .probe4(be_gt_link_up),
-        .probe5(be_gtx_cpll_is_lock)
+        .probe5(be_gtx_cpll_is_lock),
+        .probe6(sc_rx_cnt)
     );
 
-    ila_gt_link u_ila_gt_link (
-        .clk   (clk_rxoutclk_bufg[0]),
-        .probe0(gt_link_up[7:0])
+    ila_be_tx u_ila_be_tx (
+        .clk   (be_clk_txoutclk_bufg),
+        .probe0(be_tx_state[3:0]),
+        .probe1(rr_idx[2:0]),
+        .probe2(ack_rd_en[0]),
+        .probe3(sc_rd_en[0]),
+        .probe4(be_gt_tx_data[15:0]),
+        .probe5(be_gt_tx_data_valid),
+        .probe6(ack_fifo_empty[0]),
+        .probe7(ptp_tx_cnt[5:3]),
+        .probe8(sc_fifo_empty[0]),
+        .probe9(adc_fifo_prog_empty[0]),
+        .probe10(ptp_read_enable[0]),
+        .probe11(ptp_tx_cnt[2:0]),
+        .probe12(ptp_data[7:0]),
+        .probe13(ptp_read_valid[0]),
+        .probe14(ptp_read_empty),
+        .probe15(ack_tx_cnt)
     );
 
-    ila_gt_link instance_ila_gt_link (
-        .clk    (CLK_100M),
-        .probe0 (gtx_cpll_is_lock)
+    //--------------------------------
+    // ILA debug: FE RX path, channel 0 only (clk_rxoutclk_bufg[0] domain)
+    //--------------------------------
+    ila_fe_rx u_ila_fe_rx (
+        .clk    (clk_rxoutclk_bufg[0]),
+        .probe0 (user_rx_data[15:0]),
+        .probe1 (user_rx_data_valid[0]),
+        .probe2 (ack_pend[0]),
+        .probe3 (sc_pend[0]),
+        .probe4 (evt_pend[6:0]),
+        .probe5 (ack_pend[0] && ~ack_fifo_full[0] && ~ack_wr_rst_busy[0]),
+        .probe6 (ack_fifo_full[0]),
+        .probe7 (ack_wr_rst_busy[0]),
+        .probe8 (gt_link_up[0]),
+        .probe9 (gtx_cpll_is_lock[0]),
+        .probe10(sc_wr_rst_busy[0]),
+        .probe11(adc_wr_rst_busy[0])
     );
 endmodule
