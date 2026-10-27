@@ -33,7 +33,11 @@ module slow_control_manager(
 
     // per-channel PTP delay (clk_txoutclk_bufg[ch] domain, from CDC FIFO)
     output wire [127:0] timestamp_rx_delay,
-    output wire [7:0]   timestamp_rx_delay_valid
+    output wire [7:0]   timestamp_rx_delay_valid,
+
+    // One-cycle requests in each clk_txoutclk_bufg[ch] domain.
+    output wire [7:0]   ptp_reset,
+    output wire [7:0]   ptp_buffer_reset
     );
 
     wire [7:0] addr;
@@ -45,13 +49,28 @@ module slow_control_manager(
     wire is_slow_ctrl;   // addr 1~8
     wire is_ptp_start;   // addr 0xF1~0xF8
     wire is_ptp_delay;   // addr 0xE1~0xE8
+    wire is_ptp_reset;
+    wire is_ptp_buffer_reset;
 
     assign is_slow_ctrl = be_gt_rx_data_valid && (addr >= 8'd1) && (addr <= 8'd8);
     assign is_ptp_start = be_gt_rx_data_valid && (addr[7:4] == 4'hF) && (addr[3:0] >= 4'd1) && (addr[3:0] <= 4'd8);
     assign is_ptp_delay = be_gt_rx_data_valid && (addr[7:4] == 4'hE) && (addr[3:0] >= 4'd1) && (addr[3:0] <= 4'd8);
+    // 0xD1~0xD8 select the per-underwater zero-value PTP reset sequence.
+    assign is_ptp_reset = be_gt_rx_data_valid &&
+                          (addr[7:4] == 4'hD) &&
+                          (addr[3:0] >= 4'd1) &&
+                          (addr[3:0] <= 4'd8);
+    assign is_ptp_buffer_reset = be_gt_rx_data_valid &&
+                                 (addr[7:4] == 4'hC) &&
+                                 (addr[3:0] >= 4'd1) &&
+                                 (addr[3:0] <= 4'd8);
 
     wire [2:0] ptp_start_ch;
     wire [2:0] ptp_delay_ch;
+    wire [2:0] ptp_reset_ch;
+    wire [2:0] ptp_buffer_reset_ch;
+    assign ptp_reset_ch = addr[2:0] - 3'd1;
+    assign ptp_buffer_reset_ch = addr[2:0] - 3'd1;
     assign ptp_start_ch = addr[3:0] - 4'd1;  // 0xF1→ch0, 0xF2→ch1, ..., 0xF8→ch7
     assign ptp_delay_ch = addr[3:0] - 4'd1;  // 0xE1→ch0, 0xE2→ch1, ..., 0xE8→ch7
 
@@ -75,6 +94,87 @@ module slow_control_manager(
     assign ptp_fifo_wr_en = ptp_start_pulse;
     assign ptp_fifo_din   = 1'b1;
     assign ptp_fifo_wr_ch = ptp_start_ch;
+
+    //--------------------------------
+    // Per-channel PTP reset request CDC
+    //--------------------------------
+    reg ptp_reset_cmd_d;
+    reg [7:0] ptp_reset_toggle;
+
+    always @(posedge be_clk_rxoutclk_bufg or negedge rst_n) begin
+        if (!rst_n) begin
+            ptp_reset_cmd_d  <= 1'b0;
+            ptp_reset_toggle <= 8'h00;
+        end else begin
+            ptp_reset_cmd_d <= is_ptp_reset;
+            if (is_ptp_reset && !ptp_reset_cmd_d)
+                ptp_reset_toggle[ptp_reset_ch] <=
+                    ~ptp_reset_toggle[ptp_reset_ch];
+        end
+    end
+
+    genvar ptp_reset_idx;
+    generate
+        for (ptp_reset_idx = 0; ptp_reset_idx < 8;
+             ptp_reset_idx = ptp_reset_idx + 1) begin : gen_ptp_reset_cdc
+            (* ASYNC_REG = "TRUE" *) reg ptp_reset_meta;
+            (* ASYNC_REG = "TRUE" *) reg ptp_reset_sync;
+
+            always @(posedge clk_txoutclk_bufg[ptp_reset_idx]) begin
+                if (!rst_n) begin
+                    ptp_reset_meta <= 1'b0;
+                    ptp_reset_sync <= 1'b0;
+                end else begin
+                    ptp_reset_meta <= ptp_reset_toggle[ptp_reset_idx];
+                    ptp_reset_sync <= ptp_reset_meta;
+                end
+            end
+
+            assign ptp_reset[ptp_reset_idx] =
+                ptp_reset_sync ^ ptp_reset_meta;
+        end
+    endgenerate
+
+    //--------------------------------
+    // Per-channel PTP output FIFO reset CDC
+    //--------------------------------
+    reg ptp_buffer_reset_cmd_d;
+    reg [7:0] ptp_buffer_reset_toggle;
+
+    always @(posedge be_clk_rxoutclk_bufg or negedge rst_n) begin
+        if (!rst_n) begin
+            ptp_buffer_reset_cmd_d  <= 1'b0;
+            ptp_buffer_reset_toggle <= 8'h00;
+        end else begin
+            ptp_buffer_reset_cmd_d <= is_ptp_buffer_reset;
+            if (is_ptp_buffer_reset && !ptp_buffer_reset_cmd_d)
+                ptp_buffer_reset_toggle[ptp_buffer_reset_ch] <=
+                    ~ptp_buffer_reset_toggle[ptp_buffer_reset_ch];
+        end
+    end
+
+    genvar ptp_buffer_reset_idx;
+    generate
+        for (ptp_buffer_reset_idx = 0; ptp_buffer_reset_idx < 8;
+             ptp_buffer_reset_idx = ptp_buffer_reset_idx + 1) begin : gen_ptp_buffer_reset_cdc
+            (* ASYNC_REG = "TRUE" *) reg ptp_buffer_reset_meta;
+            (* ASYNC_REG = "TRUE" *) reg ptp_buffer_reset_sync;
+
+            always @(posedge clk_txoutclk_bufg[ptp_buffer_reset_idx]) begin
+                if (!rst_n) begin
+                    ptp_buffer_reset_meta <= 1'b0;
+                    ptp_buffer_reset_sync <= 1'b0;
+                end else begin
+                    ptp_buffer_reset_meta <=
+                        ptp_buffer_reset_toggle[ptp_buffer_reset_idx];
+                    ptp_buffer_reset_sync <= ptp_buffer_reset_meta;
+                end
+            end
+
+            assign ptp_buffer_reset[ptp_buffer_reset_idx] =
+                ptp_buffer_reset_sync ^ ptp_buffer_reset_meta;
+        end
+    endgenerate
 
     //--------------------------------
     // PTP delay: 2-word protocol, write into FIFO

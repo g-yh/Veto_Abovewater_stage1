@@ -278,6 +278,11 @@ module main (
     wire [  7:0] ptp_start_valid;
     wire [127:0] timestamp_rx_delay;
     wire [  7:0] timestamp_rx_delay_valid;
+    wire [  7:0] ptp_reset_pulse;
+    wire [  7:0] ptp_buffer_reset_pulse;
+    wire [  7:0] ptp_fifo_rst_n;
+    wire [  7:0] fe_tx_reset_n;
+    wire         be_tx_reset_n;
 
     // ptp uart output (8ch × 8bit)
     wire [ 63:0] ptp_data;
@@ -305,6 +310,47 @@ module main (
     wire        be_gt_link_up;
     wire [ 1:0] be_rx_data_is_comma;
     wire        be_gtx_rx_error;
+
+    // VIO reset is asynchronous by design. Each receiving/sending clock
+    // domain gets a local asynchronous-assert/synchronous-release reset.
+    wire [7:0] fe_rx_reset_n;
+    wire       be_rx_reset_n;
+    reg  [7:0] fe_fifo_reset_n;
+    reg        be_slow_control_reset_n;
+
+    genvar grst;
+    generate
+        for (grst = 0; grst < 8; grst = grst + 1) begin : gen_fe_reset_sync
+            reset_sync u_rx_reset_sync (
+                .clk   (clk_rxoutclk_bufg[grst]),
+                .arst_n(sysrst_glb_n),
+                .rst_n (fe_rx_reset_n[grst])
+            );
+            reset_sync u_tx_reset_sync (
+                .clk   (clk_txoutclk_bufg[grst]),
+                .arst_n(sysrst_glb_n),
+                .rst_n (fe_tx_reset_n[grst])
+            );
+        end
+    endgenerate
+
+    reset_sync u_be_rx_reset_sync (
+        .clk   (be_clk_rxoutclk_bufg),
+        .arst_n(sysrst_glb_n),
+        .rst_n (be_rx_reset_n)
+    );
+    reset_sync u_be_tx_reset_sync (
+        .clk   (be_clk_txoutclk_bufg),
+        .arst_n(sysrst_glb_n),
+        .rst_n (be_tx_reset_n)
+    );
+
+    always @(posedge be_clk_rxoutclk_bufg) begin
+        if (!be_rx_reset_n)
+            be_slow_control_reset_n <= 1'b0;
+        else
+            be_slow_control_reset_n <= be_gt_link_up;
+    end
 
     assign gt_link_up_led2 = be_gt_link_up;
 
@@ -355,13 +401,60 @@ module main (
     genvar ch;
     generate
         for (ch = 0; ch < 8; ch = ch + 1) begin : gen_time_sync
+            reg [1:0] ptp_reset_seq;
+            reg       ptp_reset_value_valid;
+            reg       ptp_reset_start;
+            reg [4:0] ptp_buffer_reset_cnt;
+
+            always @(posedge clk_txoutclk_bufg[ch]) begin
+                if (!fe_tx_reset_n[ch]) begin
+                    ptp_buffer_reset_cnt <= 5'd0;
+                end else if (ptp_buffer_reset_pulse[ch]) begin
+                    ptp_buffer_reset_cnt <= 5'd15;
+                end else if (ptp_buffer_reset_cnt != 5'd0) begin
+                    ptp_buffer_reset_cnt <= ptp_buffer_reset_cnt - 5'd1;
+                end
+            end
+
+            assign ptp_fifo_rst_n[ch] =
+                be_tx_reset_n && (ptp_buffer_reset_cnt == 5'd0);
+
+            always @(posedge clk_txoutclk_bufg[ch]) begin
+                if (!fe_tx_reset_n[ch]) begin
+                    ptp_reset_seq         <= 2'd0;
+                    ptp_reset_value_valid <= 1'b0;
+                    ptp_reset_start       <= 1'b0;
+                end else begin
+                    ptp_reset_value_valid <= 1'b0;
+                    ptp_reset_start       <= 1'b0;
+                    case (ptp_reset_seq)
+                        2'd0: begin
+                            if (ptp_reset_pulse[ch])
+                                ptp_reset_seq <= 2'd1;
+                        end
+                        2'd1: begin
+                            ptp_reset_value_valid <= 1'b1;
+                            ptp_reset_seq         <= 2'd2;
+                        end
+                        2'd2: begin
+                            ptp_reset_value_valid <= 1'b1;
+                            ptp_reset_start       <= 1'b1;
+                            ptp_reset_seq         <= 2'd3;
+                        end
+                        default: begin
+                            ptp_reset_seq <= 2'd0;
+                        end
+                    endcase
+                end
+            end
+
             time_sync_manager instance_time_sync_manager (
                 .clk_txoutclk_bufg(clk_txoutclk_bufg[ch]),
                 .clk_rxoutclk_bufg(clk_rxoutclk_bufg[ch]),
                 .clk_sys_400M     (clk_400M),
                 .clk_drp_100M     (CLK_100M),
                 .clk_uart         (be_clk_txoutclk_bufg),
-                .fifo_rst_n       (sysrst_glb_n),
+                .fifo_rst_n       (ptp_fifo_rst_n[ch]),
 
                 // gtx data
                 .gt_tx_data         (gt_tx_data[ch*16+:16]),
@@ -379,9 +472,15 @@ module main (
                 // timestamp
                 .timestamp_tx   (ptp_timestamp_tx[ch*64+:64]),
                 .timestamp_rx   (ptp_timestamp_rx[ch*64+:64]),
-                .ptp_start      (ptp_start[ch]),
-                .ptp_value      (timestamp_rx_delay[ch*16+:16]),
-                .ptp_value_valid(timestamp_rx_delay_valid[ch]),
+                .ptp_start      (ptp_start[ch] | ptp_reset_start),
+                .ptp_value      (
+                    ptp_reset_value_valid
+                    ? 16'd0 : timestamp_rx_delay[ch*16+:16]
+                ),
+                .ptp_value_valid(
+                    timestamp_rx_delay_valid[ch] |
+                    ptp_reset_value_valid
+                ),
                 .tx_load_value  (64'b0),
                 .tx_load        (1'b0),
 
@@ -412,8 +511,8 @@ module main (
             assign sc_wr_this[ch]  = user_rx_data_valid[ch] && sc_pend[ch];
             assign adc_wr_this[ch] = user_rx_data_valid[ch] && (evt_pend[ch*7+:7] != 7'd0);
 
-            always @(posedge clk_rxoutclk_bufg[ch] or negedge sysrst_glb_n) begin
-                if (!sysrst_glb_n) begin
+            always @(posedge clk_rxoutclk_bufg[ch]) begin
+                if (!fe_rx_reset_n[ch]) begin
                     sc_pend[ch] <= 1'b0;
                     evt_pend[ch*7+:7] <= 7'd0;
                     ack_pend[ch] <= 1'b0;
@@ -445,8 +544,15 @@ module main (
             end
 
             // 慢控返回 FIFO
+            always @(posedge clk_rxoutclk_bufg[ch]) begin
+                if (!fe_rx_reset_n[ch])
+                    fe_fifo_reset_n[ch] <= 1'b0;
+                else
+                    fe_fifo_reset_n[ch] <= gt_link_up[ch];
+            end
+
             fifo_sc_tx u_fifo_sc_tx (
-                .rst        (~(gt_link_up[ch] && sysrst_glb_n)),
+                .rst        (~fe_fifo_reset_n[ch]),
                 .wr_clk     (clk_rxoutclk_bufg[ch]),
                 .rd_clk     (be_clk_txoutclk_bufg),
                 .din        (user_rx_data[ch*16+:16]),
@@ -462,7 +568,7 @@ module main (
 
             // ack
             fifo_sc_tx u_fifo_ack_tx (
-                .rst        (~(gt_link_up[ch] && sysrst_glb_n)),
+                .rst        (~fe_fifo_reset_n[ch]),
                 .wr_clk     (clk_rxoutclk_bufg[ch]),
                 .rd_clk     (be_clk_txoutclk_bufg),
                 .din        (user_rx_data[ch*16+:16]),
@@ -478,7 +584,7 @@ module main (
 
             // ADC 事件 FIFO（prog_empty_thresh = EVT_WORDS, prog_full_thresh = ADC_FIFO_FULL_THRESH）
             fifo_adc u_fifo_adc (
-                .rst              (~(gt_link_up[ch] && sysrst_glb_n)),
+                .rst              (~fe_fifo_reset_n[ch]),
                 .wr_clk           (clk_rxoutclk_bufg[ch]),
                 .rd_clk           (be_clk_txoutclk_bufg),
                 .din              (user_rx_data[ch*16+:16]),
@@ -524,8 +630,8 @@ module main (
     reg [5:0] ptp_tx_cnt;
     reg [13:0] ptp_wait_cnt;
 
-    always @(posedge be_clk_txoutclk_bufg or negedge sysrst_glb_n) begin
-        if (!sysrst_glb_n) begin
+    always @(posedge be_clk_txoutclk_bufg) begin
+        if (!be_tx_reset_n) begin
             be_tx_state         <= BE_TX_IDLE;
             rr_idx              <= 3'd0;
             evt_tx_cnt          <= 7'd0;
@@ -718,7 +824,7 @@ module main (
     //   on that channel's user_tx_data (time_sync sends it on the FE GT TX).
     //--------------------------------
     slow_control_manager instance_slow_control_manager (
-        .rst_n                   (be_gt_link_up && sysrst_glb_n),
+        .rst_n                   (be_slow_control_reset_n),
         .be_clk_rxoutclk_bufg    (be_clk_rxoutclk_bufg),
         .be_gt_rx_data           (be_gt_rx_data),
         .be_gt_rx_data_valid     (be_gt_rx_data_valid),
@@ -728,7 +834,9 @@ module main (
         .ptp_start               (ptp_start),
         .ptp_start_valid         (ptp_start_valid),
         .timestamp_rx_delay      (timestamp_rx_delay),
-        .timestamp_rx_delay_valid(timestamp_rx_delay_valid)
+        .timestamp_rx_delay_valid(timestamp_rx_delay_valid),
+        .ptp_reset               (ptp_reset_pulse),
+        .ptp_buffer_reset        (ptp_buffer_reset_pulse)
     );
 
     //--------------------------------
@@ -739,8 +847,8 @@ module main (
     //   detect rising edge of be_gt_rx_data_valid (one per received word)
     reg [15:0] sc_rx_cnt;
     reg        be_gt_rx_data_valid_d;
-    always @(posedge be_clk_rxoutclk_bufg or negedge sysrst_glb_n) begin
-        if (!sysrst_glb_n) begin
+    always @(posedge be_clk_rxoutclk_bufg) begin
+        if (!be_rx_reset_n) begin
             sc_rx_cnt              <= 16'd0;
             be_gt_rx_data_valid_d  <= 1'b0;
         end else begin
@@ -754,8 +862,8 @@ module main (
     //   (clk_txoutclk_bufg[0] domain); count rising edges of the valid strobe
     reg [15:0] sc_tx_uw_cnt;
     reg        user_tx_data_valid_d;
-    always @(posedge clk_txoutclk_bufg[0] or negedge sysrst_glb_n) begin
-        if (!sysrst_glb_n) begin
+    always @(posedge clk_txoutclk_bufg[0]) begin
+        if (!fe_tx_reset_n[0]) begin
             sc_tx_uw_cnt         <= 16'd0;
             user_tx_data_valid_d <= 1'b0;
         end else begin
@@ -768,8 +876,8 @@ module main (
     // ACK TX counter: W-packet ack frames (FFF3+FFFF) sent to stage2 on the BE GT TX
     //   (be_clk_txoutclk_bufg domain), one per BE_TX_ACK_HDR cycle
     reg [15:0] ack_tx_cnt;
-    always @(posedge be_clk_txoutclk_bufg or negedge sysrst_glb_n) begin
-        if (!sysrst_glb_n)
+    always @(posedge be_clk_txoutclk_bufg) begin
+        if (!be_tx_reset_n)
             ack_tx_cnt <= 16'd0;
         else if (be_tx_state == BE_TX_ACK_HDR)
             ack_tx_cnt <= ack_tx_cnt + 16'd1;
@@ -862,4 +970,23 @@ module main (
         .probe10(sc_wr_rst_busy[0]),
         .probe11(adc_wr_rst_busy[0])
     );
+endmodule
+
+module reset_sync (
+    input  wire clk,
+    input  wire arst_n,
+    output reg  rst_n
+);
+
+    (* ASYNC_REG = "TRUE" *) reg sync_meta;
+
+    always @(posedge clk or negedge arst_n) begin
+        if (!arst_n) begin
+            sync_meta <= 1'b0;
+            rst_n     <= 1'b0;
+        end else begin
+            sync_meta <= 1'b1;
+            rst_n     <= sync_meta;
+        end
+    end
 endmodule

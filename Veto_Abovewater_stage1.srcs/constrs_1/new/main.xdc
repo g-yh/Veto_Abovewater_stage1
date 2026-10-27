@@ -4,6 +4,25 @@ set_property IOSTANDARD DIFF_SSTL15 [get_ports SYSCLK_200MP_IN]
 set_property IOSTANDARD DIFF_SSTL15 [get_ports SYSCLK_200MN_IN]
 create_clock -period 5.000 -name SYSCLK_200MP_IN -waveform {0.000 2.500} [get_ports SYSCLK_200MP_IN]
 
+# VIO reset is asynchronous by design. All consumers are local reset
+# synchronizers or FIFO reset pins with internal reset synchronization.
+set_false_path \
+    -from [get_cells -hierarchical -filter {NAME =~ *vio_0_inst*Probe_out_reg*}] \
+    -to [get_clocks -regexp {.*(RXOUTCLK|TXOUTCLK|pll_clk_400M|clk_out1_clk_wiz_aurora).*}]
+
+# GT RXRESETDONE and the PMA/align flag are asynchronous status signals.
+# They enter two-flop synchronizers in time_sync.v.
+set_false_path \
+    -to [get_cells -hierarchical -filter {NAME =~ *gt_rx_rst_done_meta_reg*}]
+set_false_path \
+    -to [get_cells -hierarchical -filter {NAME =~ *gt_pma_rst_n_flag_meta_reg*}]
+
+# The TDC delay line intentionally samples asynchronous TX/RX clocks at
+# 400 MHz. Its first capture bank is a measurement stage, not a normal
+# synchronous data path, so ordinary setup analysis does not apply.
+set_false_path \
+    -to [get_cells -hierarchical -filter {NAME =~ *instance_tdc_phase_measure*instance_tdl*signals_delay_temp_reg*}]
+
 set_property PACKAGE_PIN G8 [get_ports gt_refclk2_p]
 set_property PACKAGE_PIN G7 [get_ports gt_refclk2_n]
 create_clock -period 8.000 -name gt_refclk2_p [get_ports gt_refclk2_p]
