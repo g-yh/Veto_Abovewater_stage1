@@ -286,14 +286,14 @@ module ptp_manager (
         counter_tdc_fifo_write <= counter_tdc_fifo_write + 1;
     end
 
-    ila_tdc_phase_400m u_ila_tdc_phase_400m (
-        .clk   (clk_sys_400M),
-        .probe0(counter_coarse_dbg[23:0]),
-        .probe1(tdc_update_tx),
-        .probe2(tdc_update_rx),
-        .probe3(tdc_phase_results[63:0]),
-        .probe4(counter_tdc_fifo_write[3:0])
-    );
+    // ila_tdc_phase_400m u_ila_tdc_phase_400m (
+    //     .clk   (clk_sys_400M),
+    //     .probe0(counter_coarse_dbg[23:0]),
+    //     .probe1(tdc_update_tx),
+    //     .probe2(tdc_update_rx),
+    //     .probe3(tdc_phase_results[63:0]),
+    //     .probe4(counter_tdc_fifo_write[3:0])
+    // );
 
     // timestamp buffers
     wire [63:0] timestamp_t2_buffer;    // rx in, tx out
@@ -327,17 +327,17 @@ module ptp_manager (
     reg  [63:0] data_output_rx;
     reg  data_output_rx_valid;
 
-    ila_tdc_phase_rx u_ila_tdc_phase_rx (
-        .clk   (clk_rxoutclk_bufg),
-        .probe0(states_ptp_rx[1:0]),
-        .probe1(counter_ptp_rx[4:0]),
-        .probe2(tdc_phase_results_rx[63:0]),
-        .probe3(tdc_phase_results_rx_data[63:0]),
-        .probe4(tdc_phase_results_rx_rcv[63:0]),
-        .probe5(tdc_phase_fifo_empty),
-        .probe6(tdc_phase_fifo_valid),
-        .probe7(data_output_rx_valid)
-    );
+    // ila_tdc_phase_rx u_ila_tdc_phase_rx (
+    //     .clk   (clk_rxoutclk_bufg),
+    //     .probe0(states_ptp_rx[1:0]),
+    //     .probe1(counter_ptp_rx[4:0]),
+    //     .probe2(tdc_phase_results_rx[63:0]),
+    //     .probe3(tdc_phase_results_rx_data[63:0]),
+    //     .probe4(tdc_phase_results_rx_rcv[63:0]),
+    //     .probe5(tdc_phase_fifo_empty),
+    //     .probe6(tdc_phase_fifo_valid),
+    //     .probe7(data_output_rx_valid)
+    // );
 
     buffer_timestamp_to_uart instance_buffer_timestamp_to_uart (
         .clk_txoutclk_bufg  (clk_txoutclk_bufg),
@@ -810,6 +810,8 @@ module tdc_phase_measure #(
     always @(posedge clk) begin
         counter_coarse <= counter_coarse + 1;
     end
+    wire [23:0] counter_coarse_capture =
+        (N_carry4 == 64) ? (counter_coarse - 24'd1) : counter_coarse;
 
     // system clock measure tx clock
     wire [N_bins_bits:0] tdc_rise_tx;
@@ -844,11 +846,11 @@ module tdc_phase_measure #(
     // output
     always @(posedge clk) begin
         if (tdc_rise_tx[N_bins_bits]) begin
-            tdc_phase_results[63:40] <= counter_coarse;
+            tdc_phase_results[63:40] <= counter_coarse_capture;
             tdc_phase_results[39:32] <= tdc_rise_tx[7:0];
         end
         if (tdc_rise_rx[N_bins_bits]) begin
-            tdc_phase_results[31: 8] <= counter_coarse;
+            tdc_phase_results[31: 8] <= counter_coarse_capture;
             tdc_phase_results[ 7: 0] <= tdc_rise_rx[7:0];
         end
     end

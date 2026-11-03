@@ -147,7 +147,6 @@ module main (
     assign ad9253_spi_rst_n = pll_locked;
     assign cfg_ad9528 = pll_locked;
 
-    // assign sysrst_glb_n = pll_locked;
     vio_0 vio_0_inst (
         .clk(CLK_200M),
         .probe_out0(sysrst_glb_n)
@@ -509,7 +508,9 @@ module main (
             //     其它(含 bc3c) -> 忽略
             // --------------------------------
             assign sc_wr_this[ch]  = user_rx_data_valid[ch] && sc_pend[ch];
-            assign adc_wr_this[ch] = user_rx_data_valid[ch] && (evt_pend[ch*7+:7] != 7'd0);
+            assign adc_wr_this[ch] =
+                user_rx_data_valid[ch] &&
+                (evt_pend[ch*7+:7] != 7'd0);
 
             always @(posedge clk_rxoutclk_bufg[ch]) begin
                 if (!fe_rx_reset_n[ch]) begin
@@ -582,15 +583,17 @@ module main (
                 .rd_rst_busy(ack_rd_rst_busy[ch])
             );
 
-            // ADC 事件 FIFO（prog_empty_thresh = EVT_WORDS, prog_full_thresh = ADC_FIFO_FULL_THRESH）
+            // ADC 事件 FIFO（prog_empty_thresh = EVT_WORDS-1, prog_full_thresh = ADC_FIFO_FULL_THRESH）
             fifo_adc u_fifo_adc (
-                .rst              (~fe_fifo_reset_n[ch]),
+                .rst              (~(gt_link_up[ch] && sysrst_glb_n)),
                 .wr_clk           (clk_rxoutclk_bufg[ch]),
                 .rd_clk           (be_clk_txoutclk_bufg),
                 .din              (user_rx_data[ch*16+:16]),
                 .wr_en            (adc_wr_this[ch] && ~adc_fifo_full[ch] && ~adc_wr_rst_busy[ch]),
                 .rd_en            (adc_rd_en[ch]),
-                .prog_empty_thresh(EVT_WORDS),
+                // prog_empty is asserted at count <= threshold. One complete
+                // EVT_WORDS event must therefore use threshold EVT_WORDS-1.
+                .prog_empty_thresh(EVT_WORDS - 1'b1),
                 .prog_full_thresh (ADC_FIFO_FULL_THRESH),
                 .dout             (adc_fifo_dout[ch*16+:16]),
                 .full             (adc_fifo_full[ch]),
@@ -720,6 +723,9 @@ module main (
                         be_gt_tx_data       <= adc_fifo_dout[rr_idx*16+:16];
                         be_gt_tx_data_valid <= 1'b1;
                         if (evt_tx_cnt == EVT_WORDS[6:0] - 7'd1) begin
+                            // The board-header cycle primed this Standard FIFO
+                            // read. Clear rd_en here so the first word of the
+                            // next event remains queued.
                             adc_rd_en   <= 8'd0;
                             be_tx_state <= BE_TX_IDLE;
                         end else begin
@@ -975,7 +981,7 @@ endmodule
 module reset_sync (
     input  wire clk,
     input  wire arst_n,
-    output reg  rst_n
+    (* ASYNC_REG = "TRUE" *) output reg rst_n
 );
 
     (* ASYNC_REG = "TRUE" *) reg sync_meta;

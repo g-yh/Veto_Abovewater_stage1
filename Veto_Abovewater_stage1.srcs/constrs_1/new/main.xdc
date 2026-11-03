@@ -4,11 +4,10 @@ set_property IOSTANDARD DIFF_SSTL15 [get_ports SYSCLK_200MP_IN]
 set_property IOSTANDARD DIFF_SSTL15 [get_ports SYSCLK_200MN_IN]
 create_clock -period 5.000 -name SYSCLK_200MP_IN -waveform {0.000 2.500} [get_ports SYSCLK_200MP_IN]
 
-# VIO reset is asynchronous by design. All consumers are local reset
+# VIO global reset is asynchronous by design. All consumers are local reset
 # synchronizers or FIFO reset pins with internal reset synchronization.
 set_false_path \
-    -from [get_cells -hierarchical -filter {NAME =~ *vio_0_inst*Probe_out_reg*}] \
-    -to [get_clocks -regexp {.*(RXOUTCLK|TXOUTCLK|pll_clk_400M|clk_out1_clk_wiz_aurora).*}]
+    -from [get_cells -hierarchical -filter {NAME =~ *vio_0_inst*Probe_out_reg*}]
 
 # GT RXRESETDONE and the PMA/align flag are asynchronous status signals.
 # They enter two-flop synchronizers in time_sync.v.
@@ -30,8 +29,6 @@ create_clock -period 8.000 -name gt_refclk2_p [get_ports gt_refclk2_p]
 set_property PACKAGE_PIN U8 [get_ports gt_refclk4_p]
 set_property PACKAGE_PIN U7 [get_ports gt_refclk4_n]
 create_clock -period 8.000 -name gt_refclk4_p [get_ports gt_refclk4_p]
-
-
 
 set_property PACKAGE_PIN L4     [get_ports FE_SFP_TX_P[0]]
 set_property PACKAGE_PIN L3     [get_ports FE_SFP_TX_N[0]]

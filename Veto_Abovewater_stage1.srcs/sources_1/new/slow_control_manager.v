@@ -51,6 +51,7 @@ module slow_control_manager(
     wire is_ptp_delay;   // addr 0xE1~0xE8
     wire is_ptp_reset;
     wire is_ptp_buffer_reset;
+    wire is_adc_channel_ctrl;
 
     assign is_slow_ctrl = be_gt_rx_data_valid && (addr >= 8'd1) && (addr <= 8'd8);
     assign is_ptp_start = be_gt_rx_data_valid && (addr[7:4] == 4'hF) && (addr[3:0] >= 4'd1) && (addr[3:0] <= 4'd8);
@@ -64,6 +65,10 @@ module slow_control_manager(
                                  (addr[7:4] == 4'hC) &&
                                  (addr[3:0] >= 4'd1) &&
                                  (addr[3:0] <= 4'd8);
+    assign is_adc_channel_ctrl = be_gt_rx_data_valid &&
+                                 (addr >= 8'h90) &&
+                                 (addr <= 8'h9F) &&
+                                 (be_gt_rx_data[7:0] <= 8'd31);
 
     wire [2:0] ptp_start_ch;
     wire [2:0] ptp_delay_ch;
@@ -77,6 +82,17 @@ module slow_control_manager(
     //--------------------------------
     // PTP start: write 1-bit pulse into FIFO
     //--------------------------------
+    reg adc_channel_cmd_d;
+    wire [2:0] adc_channel_target;
+    assign adc_channel_target = addr[3:1];
+    always @(posedge be_clk_rxoutclk_bufg or negedge rst_n) begin
+        if (!rst_n) begin
+            adc_channel_cmd_d <= 1'b0;
+        end else begin
+            adc_channel_cmd_d <= is_adc_channel_ctrl;
+        end
+    end
+
     reg ptp_start_cmd_d;
     always @(posedge be_clk_rxoutclk_bufg or negedge rst_n) begin
         if (!rst_n)
@@ -219,11 +235,16 @@ module slow_control_manager(
             wire        fifo_wr_rst_busy_ch;
             wire        fifo_rd_rst_busy_ch;
             wire        fifo_wr_en_ch;
+            wire        fifo_wr_adc_channel_cmd_ch;
             wire        fifo_rd_en_ch;
 
-            assign fifo_wr_en_ch = is_slow_ctrl &&
-                                   (addr == ch + 8'd1) &&
-                                   ~fifo_wr_rst_busy_ch;
+            assign fifo_wr_adc_channel_cmd_ch =
+                is_adc_channel_ctrl && !adc_channel_cmd_d &&
+                (adc_channel_target == ch[2:0]);
+            assign fifo_wr_en_ch =
+                ((is_slow_ctrl && (addr == ch + 8'd1)) ||
+                 fifo_wr_adc_channel_cmd_ch) &&
+                ~fifo_wr_rst_busy_ch;
 
             fifo_slow_control instance_fifo_slow_control (
                 .rst         (~rst_n),
