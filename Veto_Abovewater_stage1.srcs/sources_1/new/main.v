@@ -64,8 +64,8 @@ module main (
     // input   wire            ext_trig_in     ,
 
     // GT link status LEDs
-    output wire gt_link_up_led1,  // all 8 FE gt_link_up high
-    output wire gt_link_up_led2,  // BE gt_link_up
+    output wire gt_link_up_led1,  // high only when all FE GT links are down
+    output wire gt_link_up_led2,  // high when the BE GT link is down
 
     output wire MCX_CLK0,
     output wire MCX_CLK1,
@@ -113,8 +113,8 @@ module main (
     assign SFP_TX_DISABLE  = 1'b0;
     // assign      LED[4]              = pll_locked;
 
-    // assign gt_link_up_led1 = &gt_link_up;
-    assign gt_link_up_led1 = gt_link_up[0];
+    assign gt_link_up_led1 = ~(|gt_link_up);
+    // assign gt_link_up_led1 = gt_link_up[0];
     // assign gt_link_up_led2 = be_gt_link_up;   // be_gt_link_up 在下方声明后再驱动
 
     // 200M clk input buff
@@ -351,7 +351,7 @@ module main (
             be_slow_control_reset_n <= be_gt_link_up;
     end
 
-    assign gt_link_up_led2 = be_gt_link_up;
+    assign gt_link_up_led2 = ~(be_gt_link_up);
 
     //--------------------------------
     // 每通道接收返回 FIFO（写侧 clk_rxoutclk_bufg[ch]，读侧 be_clk_txoutclk_bufg）
