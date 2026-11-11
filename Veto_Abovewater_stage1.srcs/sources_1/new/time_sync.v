@@ -77,15 +77,29 @@ module time_sync_manager(
         end
     end
 
-    // link up
+    // A missing GT peer can still present valid 8b/10b characters. Do not
+    // declare link-up merely because rxnotintable stayed low: require a
+    // sustained comma/idle sequence first, then keep the link up until an
+    // actual receive error is observed.
+    wire gt_rx_comma_aligned =
+        (&gt_rx_data_is_comma) && (gt_rx_data == 16'hbc3c);
     reg  [15:0] counter_link_up;
+    reg         gt_link_aligned;
     always @(posedge clk_rxoutclk_bufg) begin
         if (gt_rx_error) begin
             counter_link_up <= 0;
-        end else if (~&counter_link_up) begin
-            counter_link_up <= counter_link_up + 1;
+            gt_link_aligned <= 1'b0;
+        end else if (!gt_link_aligned) begin
+            if (gt_rx_comma_aligned) begin
+                if (&counter_link_up)
+                    gt_link_aligned <= 1'b1;
+                else
+                    counter_link_up <= counter_link_up + 1;
+            end else begin
+                counter_link_up <= 0;
+            end
         end
-        gt_link_up <= (&counter_link_up) ? 1 : 0;
+        gt_link_up <= gt_link_aligned;
     end
 
 
@@ -143,7 +157,8 @@ module time_sync_manager(
 
     // rx data assign
     assign user_rx_data = gt_rx_data;
-    assign user_rx_data_valid = gt_rx_data_valid & ~rx_data_is_ptp;
+    assign user_rx_data_valid =
+        gt_link_up && gt_rx_data_valid && ~rx_data_is_ptp;
 endmodule
 
 module ptp_manager (
@@ -237,20 +252,22 @@ module ptp_manager (
 
     // TDC results
     wire [63:0] tdc_phase_results;  // 300MHz clock
-    wire tdc_update_tx;
-    wire tdc_update_rx;
+    wire        tdc_update_tx;
+    wire        tdc_update_rx;
+    wire        tdc_phase_results_valid;
     wire [23:0] counter_coarse_dbg;
     tdc_phase_measure instance_tdc_phase_measure (
-        .clk    (clk_sys_400M),
-        .clk_tx (flags[0]|flags[1]),
-        .clk_rx (flags[2]|flags[3]),
-        .tdc_phase_results  (tdc_phase_results),
-        .tdc_update_tx      (tdc_update_tx),
-        .tdc_update_rx      (tdc_update_rx),
-        .counter_coarse_dbg (counter_coarse_dbg)
+        .clk                 (clk_sys_400M),
+        .clk_tx              (flags[0] | flags[1]),
+        .clk_rx              (flags[2] | flags[3]),
+        .tdc_phase_results   (tdc_phase_results),
+        .tdc_phase_results_valid(tdc_phase_results_valid),
+        .tdc_update_tx       (tdc_update_tx),
+        .tdc_update_rx       (tdc_update_rx),
+        .counter_coarse_dbg  (counter_coarse_dbg)
     );
 
-    reg  [3:0] counter_tdc_fifo_write;
+    reg  [3:0] tdc_result_write_count;
     wire [63:0] tdc_phase_results_tx;
     reg  [63:0] tdc_phase_results_tx_data;
     fifo_64b_async_64b instance_fifo_tdc_phase_measure_tx (
@@ -258,7 +275,7 @@ module ptp_manager (
         .wr_clk (clk_sys_400M),
         .rd_clk (clk_txoutclk_bufg),
         .din    (tdc_phase_results),
-        .wr_en  (&counter_tdc_fifo_write),
+        .wr_en  (tdc_phase_results_valid),
         .rd_en  (1),
         .dout   (tdc_phase_results_tx),
         .full   (),
@@ -275,7 +292,7 @@ module ptp_manager (
         .wr_clk (clk_sys_400M),
         .rd_clk (clk_rxoutclk_bufg),
         .din    (tdc_phase_results),
-        .wr_en  (&counter_tdc_fifo_write),
+        .wr_en  (tdc_phase_results_valid),
         .rd_en  (1),
         .dout   (tdc_phase_results_rx),
         .full   (),
@@ -283,7 +300,9 @@ module ptp_manager (
         .valid  (tdc_phase_fifo_valid)
     );
     always @(posedge clk_sys_400M) begin
-        counter_tdc_fifo_write <= counter_tdc_fifo_write + 1;
+        if (tdc_phase_results_valid) begin
+            tdc_result_write_count <= tdc_result_write_count + 1;
+        end
     end
 
     // ila_tdc_phase_400m u_ila_tdc_phase_400m (
@@ -292,7 +311,7 @@ module ptp_manager (
     //     .probe1(tdc_update_tx),
     //     .probe2(tdc_update_rx),
     //     .probe3(tdc_phase_results[63:0]),
-    //     .probe4(counter_tdc_fifo_write[3:0])
+    //     .probe4(tdc_result_write_count[3:0])
     // );
 
     // timestamp buffers
@@ -375,7 +394,8 @@ module ptp_manager (
                     // t2 t3, slave
                     states_ptp_tx <= 2;
                     timestamp_t3_data <= timestamp_t3_buffer;
-                    // tdc_phase_results_tx_data <= tdc_phase_results_tx;
+                    // Freeze one coherent TDC pair for the whole 4-word frame.
+                    tdc_phase_results_tx_data <= tdc_phase_results_tx;
                 end
                 // idle
                 counter_ptp_tx <= 0;
@@ -402,7 +422,6 @@ module ptp_manager (
                 ptp_working <= 1;
                 counter_ptp_tx <= counter_ptp_tx + 1;
                 ptp_t3_valid <= 1;
-                tdc_phase_results_tx_data <= tdc_phase_results_tx;
                 case (counter_ptp_tx)
                     0 : begin
                         tx_data_ptp <= 16'h3cf7;
@@ -506,7 +525,8 @@ module ptp_manager (
                         states_ptp_rx <= 2;
                         timestamp_t4_data <= timestamp_t4_buffer;
                         rx_data_is_ptp <= 1;
-                        // tdc_phase_results_rx_data <= tdc_phase_results_rx;
+                        // Freeze one coherent TDC pair for this transaction.
+                        tdc_phase_results_rx_data <= tdc_phase_results_rx;
                     end else if (gt_rx_data == 16'h5cf7) begin
                         // t5, slave
                         states_ptp_rx <= 3;
@@ -533,7 +553,6 @@ module ptp_manager (
             2 : begin
                 rx_data_is_ptp <= 1;
                 ptp_t4_valid <= 1;
-                tdc_phase_results_rx_data <= tdc_phase_results_rx;
                 if (counter_ptp_rx < 5'd12) begin
                     if (gt_rx_data_valid) begin
                         counter_ptp_rx <= counter_ptp_rx + 1'b1;
@@ -801,6 +820,7 @@ module tdc_phase_measure #(
     input  wire clk_tx,
     input  wire clk_rx,
     output reg  [63:0] tdc_phase_results,
+    output reg  tdc_phase_results_valid,
     output wire tdc_update_tx,
     output wire tdc_update_rx,
     output wire [23:0] counter_coarse_dbg
@@ -843,19 +863,64 @@ module tdc_phase_measure #(
         .tdc_raw_fall(tdc_fall_rx)
     );
 
-    // output
-    always @(posedge clk) begin
-        if (tdc_rise_tx[N_bins_bits]) begin
-            tdc_phase_results[63:40] <= counter_coarse_capture;
-            tdc_phase_results[39:32] <= tdc_rise_tx[7:0];
-        end
-        if (tdc_rise_rx[N_bins_bits]) begin
-            tdc_phase_results[31: 8] <= counter_coarse_capture;
-            tdc_phase_results[ 7: 0] <= tdc_rise_rx[7:0];
-        end
-    end
-
     assign tdc_update_tx = tdc_rise_tx[N_bins_bits];
     assign tdc_update_rx = tdc_rise_rx[N_bins_bits];
     assign counter_coarse_dbg = counter_coarse;
+
+    // Latch TX and RX independently, then publish one complete pair.
+    // Writing the accumulator directly can combine a new TX sample with
+    // the previous RX sample and produce a plausible but invalid coarse
+    // phase result.
+    reg [23:0] tdc_tx_coarse_latched;
+    reg [ 7:0] tdc_tx_phase_latched;
+    reg [23:0] tdc_rx_coarse_latched;
+    reg [ 7:0] tdc_rx_phase_latched;
+    reg        tdc_tx_pending;
+    reg        tdc_rx_pending;
+
+    wire [23:0] tdc_tx_coarse_next;
+    wire [ 7:0] tdc_tx_phase_next;
+    wire [23:0] tdc_rx_coarse_next;
+    wire [ 7:0] tdc_rx_phase_next;
+    wire        tdc_pair_ready;
+
+    assign tdc_tx_coarse_next =
+        tdc_update_tx ? counter_coarse_capture : tdc_tx_coarse_latched;
+    assign tdc_tx_phase_next =
+        tdc_update_tx ? tdc_rise_tx[7:0] : tdc_tx_phase_latched;
+    assign tdc_rx_coarse_next =
+        tdc_update_rx ? counter_coarse_capture : tdc_rx_coarse_latched;
+    assign tdc_rx_phase_next =
+        tdc_update_rx ? tdc_rise_rx[7:0] : tdc_rx_phase_latched;
+    assign tdc_pair_ready =
+        (tdc_tx_pending | tdc_update_tx) &
+        (tdc_rx_pending | tdc_update_rx);
+
+    always @(posedge clk) begin
+        tdc_phase_results_valid <= 1'b0;
+
+        if (tdc_update_tx) begin
+            tdc_tx_coarse_latched <= counter_coarse_capture;
+            tdc_tx_phase_latched  <= tdc_rise_tx[7:0];
+            tdc_tx_pending        <= 1'b1;
+        end
+
+        if (tdc_update_rx) begin
+            tdc_rx_coarse_latched <= counter_coarse_capture;
+            tdc_rx_phase_latched  <= tdc_rise_rx[7:0];
+            tdc_rx_pending        <= 1'b1;
+        end
+
+        if (tdc_pair_ready) begin
+            tdc_phase_results <= {
+                tdc_tx_coarse_next,
+                tdc_tx_phase_next,
+                tdc_rx_coarse_next,
+                tdc_rx_phase_next
+            };
+            tdc_phase_results_valid <= 1'b1;
+            tdc_tx_pending          <= 1'b0;
+            tdc_rx_pending          <= 1'b0;
+        end
+    end
 endmodule

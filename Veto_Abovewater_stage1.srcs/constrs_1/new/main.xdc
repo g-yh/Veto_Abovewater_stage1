@@ -134,3 +134,15 @@ set_property PACKAGE_PIN W24 [get_ports MCX_CLK0]
 
 set_property IOSTANDARD LVCMOS33 [get_ports MCX_CLK1]
 set_property PACKAGE_PIN W23 [get_ports MCX_CLK1]
+
+set_property IOSTANDARD LVCMOS33 [get_ports debug_uw1_t1]
+set_property PACKAGE_PIN T28 [get_ports debug_uw1_t1]
+
+set_property IOSTANDARD LVCMOS33 [get_ports debug_uw1_t4]
+set_property PACKAGE_PIN T27 [get_ports debug_uw1_t4]
+
+set_property IOSTANDARD LVCMOS33 [get_ports debug_uw2_t1]
+set_property PACKAGE_PIN T26 [get_ports debug_uw2_t1]
+
+set_property IOSTANDARD LVCMOS33 [get_ports debug_uw2_t4]
+set_property PACKAGE_PIN U27 [get_ports debug_uw2_t4]

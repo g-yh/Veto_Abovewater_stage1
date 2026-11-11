@@ -67,6 +67,12 @@ module main (
     output wire gt_link_up_led1,  // high only when all FE GT links are down
     output wire gt_link_up_led2,  // high when the BE GT link is down
 
+    // PTP debug outputs for Underwater 1 and 2
+    output wire debug_uw1_t1,
+    output wire debug_uw1_t4,
+    output wire debug_uw2_t1,
+    output wire debug_uw2_t4,
+
     output wire MCX_CLK0,
     output wire MCX_CLK1,
 
@@ -292,6 +298,12 @@ module main (
     // debug
     wire [ 31:0] ptp_flags;
 
+    // bit0=t1, bit1=t2, bit2=t3, bit3=t4 for each FE channel.
+    assign debug_uw1_t1 = ptp_flags[0];
+    assign debug_uw1_t4 = ptp_flags[3];
+    assign debug_uw2_t1 = ptp_flags[4];
+    assign debug_uw2_t4 = ptp_flags[7];
+
     //--------------------------------
     // BE 侧（stage2 链路）信号前置声明
     //   这些信号由 interface_gtx_1ch 产生，但在此处就要被 generate 内的
@@ -384,6 +396,15 @@ module main (
 
     wire [  7:0] sc_wr_this;  // 本拍写 sc FIFO
     wire [  7:0] adc_wr_this;  // 本拍写 adc FIFO
+    reg  [  7:0] fe_link_up_be_meta;
+    reg  [  7:0] fe_link_up_be;
+
+    // gt_link_up is generated in each FE RX clock domain. Synchronize it to
+    // the BE TX domain before using it to decide whether a channel may send.
+    always @(posedge be_clk_txoutclk_bufg) begin
+        fe_link_up_be_meta <= gt_link_up;
+        fe_link_up_be      <= fe_link_up_be_meta;
+    end
 
     wire [  7:0] sc_fifo_full;
     wire [  7:0] sc_wr_rst_busy;
@@ -513,7 +534,7 @@ module main (
                 (evt_pend[ch*7+:7] != 7'd0);
 
             always @(posedge clk_rxoutclk_bufg[ch]) begin
-                if (!fe_rx_reset_n[ch]) begin
+                if (!fe_rx_reset_n[ch] || !gt_link_up[ch]) begin
                     sc_pend[ch] <= 1'b0;
                     evt_pend[ch*7+:7] <= 7'd0;
                     ack_pend[ch] <= 1'b0;
@@ -623,7 +644,9 @@ module main (
     localparam BE_TX_AD_BOARD = 4'd6;  // 板号头
     localparam BE_TX_AD_DATA = 4'd7;  // EVT_WORDS 个数据 word
     localparam BE_TX_PTP_HDR = 4'd8;  // PTP 帧头 FFF2
-    localparam BE_TX_PTP_DATA = 4'd9;  // 单个 FFF2 帧携带完整 48 字节
+    localparam BE_TX_PTP_DATA = 4'd9;  // 48-byte PTP payload
+    localparam BE_TX_PTP_PREFIX = 4'd10;
+    localparam BE_TX_PTP_SUFFIX = 4'd11;
     localparam [5:0] BE_PTP_FRAME_BYTES = 6'd48;
     localparam BE_PTP_WAIT_MAX = 14'd10000;  // 125 MHz 下约 80 us
 
@@ -632,6 +655,10 @@ module main (
     reg [6:0] evt_tx_cnt;
     reg [5:0] ptp_tx_cnt;
     reg [13:0] ptp_wait_cnt;
+    reg [127:0] ptp_frame_seq;
+    reg [15:0] ptp_frame_seq_tx;
+    reg [1:0] ptp_prefix_cnt;
+    reg ptp_suffix_cnt;
 
     always @(posedge be_clk_txoutclk_bufg) begin
         if (!be_tx_reset_n) begin
@@ -640,6 +667,10 @@ module main (
             evt_tx_cnt          <= 7'd0;
             ptp_tx_cnt          <= 6'd0;
             ptp_wait_cnt        <= 14'd0;
+            ptp_frame_seq       <= 128'd0;
+            ptp_frame_seq_tx    <= 16'd0;
+            ptp_prefix_cnt      <= 2'd0;
+            ptp_suffix_cnt      <= 1'b0;
             sc_rd_en            <= 8'd0;
             adc_rd_en           <= 8'd0;
             ack_rd_en           <= 8'd0;
@@ -656,13 +687,19 @@ module main (
                     be_gt_tx_data_valid <= 1'b0;
                     be_gt_tx_data       <= 16'hbc3c;
                     ptp_wait_cnt        <= 14'd0;
-                    if (~ptp_read_empty[rr_idx]) begin
+                    ptp_prefix_cnt      <= 2'd0;
+                    ptp_suffix_cnt      <= 1'b0;
+                    if (fe_link_up_be[rr_idx] &&
+                        ~ptp_read_empty[rr_idx]) begin
                         be_tx_state <= BE_TX_PTP_HDR;
-                    end else if (~ack_fifo_empty[rr_idx]) begin
+                    end else if (fe_link_up_be[rr_idx] &&
+                                 ~ack_fifo_empty[rr_idx]) begin
                         be_tx_state <= BE_TX_ACK_HDR;
-                    end else if (~sc_fifo_empty[rr_idx]) begin
+                    end else if (fe_link_up_be[rr_idx] &&
+                                 ~sc_fifo_empty[rr_idx]) begin
                         be_tx_state <= BE_TX_SC_HDR;
-                    end else if (~adc_fifo_prog_empty[rr_idx]) begin
+                    end else if (fe_link_up_be[rr_idx] &&
+                                 ~adc_fifo_prog_empty[rr_idx]) begin
                         be_tx_state <= BE_TX_AD_HDR;
                     end else begin
                         rr_idx <= rr_idx + 3'd1;
@@ -736,14 +773,36 @@ module main (
                         be_gt_tx_data_valid <= 1'b0;
                     end
                 end
-                // ---- PTP：最高优先，FFF2 头 + 完整 48 字节 ----
+                // ---- PTP: FFF2 + marker/sequence + 48B payload + end marker ----
                 BE_TX_PTP_HDR: begin
                     be_gt_tx_data       <= 16'hFFF2;
                     be_gt_tx_data_valid <= 1'b1;
-                    ptp_read_enable     <= (8'd1 << rr_idx);
+                    ptp_read_enable     <= 8'd0;
+                    ptp_frame_seq_tx    <=
+                        ptp_frame_seq[rr_idx*16 +: 16];
+                    ptp_frame_seq[rr_idx*16 +: 16] <=
+                        ptp_frame_seq[rr_idx*16 +: 16] + 16'd1;
+                    ptp_prefix_cnt      <= 2'd0;
                     ptp_tx_cnt          <= 6'd0;
                     ptp_wait_cnt        <= 14'd0;
-                    be_tx_state         <= BE_TX_PTP_DATA;
+                    be_tx_state         <= BE_TX_PTP_PREFIX;
+                end
+                BE_TX_PTP_PREFIX: begin
+                    be_gt_tx_data_valid <= 1'b1;
+                    case (ptp_prefix_cnt)
+                        2'd0: be_gt_tx_data <= 16'h00A5;
+                        2'd1: be_gt_tx_data <= 16'h005A;
+                        2'd2: be_gt_tx_data <=
+                            {8'd0, ptp_frame_seq_tx[15:8]};
+                        default: be_gt_tx_data <=
+                            {8'd0, ptp_frame_seq_tx[7:0]};
+                    endcase
+                    if (ptp_prefix_cnt == 2'd3) begin
+                        ptp_prefix_cnt  <= 2'd0;
+                        be_tx_state     <= BE_TX_PTP_DATA;
+                    end else begin
+                        ptp_prefix_cnt <= ptp_prefix_cnt + 2'd1;
+                    end
                 end
                 BE_TX_PTP_DATA: begin
                     ptp_read_enable <= (8'd1 << rr_idx);
@@ -753,7 +812,8 @@ module main (
                         ptp_wait_cnt        <= 14'd0;
                         if (ptp_tx_cnt == BE_PTP_FRAME_BYTES - 6'd1) begin
                             ptp_read_enable <= 8'd0;
-                            be_tx_state     <= BE_TX_IDLE;
+                            ptp_suffix_cnt  <= 1'b0;
+                            be_tx_state     <= BE_TX_PTP_SUFFIX;
                         end else begin
                             ptp_tx_cnt <= ptp_tx_cnt + 6'd1;
                         end
@@ -768,6 +828,16 @@ module main (
                         be_gt_tx_data       <= 16'hbc3c;
                         be_gt_tx_data_valid <= 1'b0;
                         ptp_wait_cnt        <= ptp_wait_cnt + 14'd1;
+                    end
+                end
+                BE_TX_PTP_SUFFIX: begin
+                    be_gt_tx_data_valid <= 1'b1;
+                    if (!ptp_suffix_cnt) begin
+                        be_gt_tx_data  <= 16'h005A;
+                        ptp_suffix_cnt <= 1'b1;
+                    end else begin
+                        be_gt_tx_data <= 16'h00A5;
+                        be_tx_state   <= BE_TX_IDLE;
                     end
                 end
                 default: begin
@@ -949,13 +1019,14 @@ module main (
         .probe6(ack_fifo_empty[0]),
         .probe7(ptp_tx_cnt[5:3]),
         .probe8(sc_fifo_empty[0]),
-        .probe9(adc_fifo_prog_empty[0]),
+        .probe9(adc_fifo_prog_empty[7:2]),
         .probe10(ptp_read_enable[0]),
         .probe11(ptp_tx_cnt[2:0]),
         .probe12(ptp_data[7:0]),
         .probe13(ptp_read_valid[0]),
         .probe14(ptp_read_empty),
-        .probe15(ack_tx_cnt)
+        .probe15(ack_tx_cnt),
+        .probe16(adc_fifo_empty[7:2])
     );
 
     //--------------------------------

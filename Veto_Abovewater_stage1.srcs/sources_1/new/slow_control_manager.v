@@ -50,17 +50,20 @@ module slow_control_manager(
     wire is_ptp_start;   // addr 0xF1~0xF8
     wire is_ptp_delay;   // addr 0xE1~0xE8
     wire is_ptp_reset;
+    wire is_ptp_reset_all;
     wire is_ptp_buffer_reset;
     wire is_adc_channel_ctrl;
 
     assign is_slow_ctrl = be_gt_rx_data_valid && (addr >= 8'd1) && (addr <= 8'd8);
     assign is_ptp_start = be_gt_rx_data_valid && (addr[7:4] == 4'hF) && (addr[3:0] >= 4'd1) && (addr[3:0] <= 4'd8);
     assign is_ptp_delay = be_gt_rx_data_valid && (addr[7:4] == 4'hE) && (addr[3:0] >= 4'd1) && (addr[3:0] <= 4'd8);
-    // 0xD1~0xD8 select the per-underwater zero-value PTP reset sequence.
+    // 0xD0 resets all eight PTP channels; 0xD1~0xD8 reset one channel.
     assign is_ptp_reset = be_gt_rx_data_valid &&
                           (addr[7:4] == 4'hD) &&
                           (addr[3:0] >= 4'd1) &&
                           (addr[3:0] <= 4'd8);
+    assign is_ptp_reset_all =
+        be_gt_rx_data_valid && (addr == 8'hD0);
     assign is_ptp_buffer_reset = be_gt_rx_data_valid &&
                                  (addr[7:4] == 4'hC) &&
                                  (addr[3:0] >= 4'd1) &&
@@ -122,10 +125,15 @@ module slow_control_manager(
             ptp_reset_cmd_d  <= 1'b0;
             ptp_reset_toggle <= 8'h00;
         end else begin
-            ptp_reset_cmd_d <= is_ptp_reset;
-            if (is_ptp_reset && !ptp_reset_cmd_d)
-                ptp_reset_toggle[ptp_reset_ch] <=
-                    ~ptp_reset_toggle[ptp_reset_ch];
+            ptp_reset_cmd_d <= is_ptp_reset | is_ptp_reset_all;
+            if ((is_ptp_reset | is_ptp_reset_all) &&
+                !ptp_reset_cmd_d) begin
+                if (is_ptp_reset_all)
+                    ptp_reset_toggle <= ~ptp_reset_toggle;
+                else
+                    ptp_reset_toggle[ptp_reset_ch] <=
+                        ~ptp_reset_toggle[ptp_reset_ch];
+            end
         end
     end
 
