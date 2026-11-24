@@ -155,10 +155,7 @@ module main (
     assign ad9253_spi_rst_n = pll_locked;
     assign cfg_ad9528 = pll_locked;
 
-    vio_0 vio_0_inst (
-        .clk(CLK_200M),
-        .probe_out0(sysrst_glb_n)
-    );
+    // 全局复位改由 PLL 锁定 + GT 链路插拔事件产生，见下方 reset 控制器。
 
     // localparam integer CNT_50MS = 250_000;
     // reg [18:0] cnt;
@@ -364,6 +361,37 @@ module main (
         else
             be_slow_control_reset_n <= be_gt_link_up;
     end
+
+    //------------------------------------------------------------------
+    // 全局复位
+    //   * PLL 未锁定期间一直保持复位
+    //   * 任一路 GT 链路（8 路 FE + 1 路 BE）状态变化都会重新触发复位，
+    //     因此插拔光纤即可复位 stage1，不再依赖 VIO。
+    //------------------------------------------------------------------
+    wire [8:0] gt_link_all = {be_gt_link_up, gt_link_up};
+
+    reg [8:0]  gt_link_meta;
+    reg [8:0]  gt_link_sync;
+    reg [19:0] glb_rst_hold;
+
+    wire gt_link_changed = |(gt_link_sync ^ gt_link_meta);
+
+    always @(posedge CLK_100M or negedge pll_locked) begin
+        if (!pll_locked) begin
+            gt_link_meta <= 9'd0;
+            gt_link_sync <= 9'd0;
+            glb_rst_hold <= 20'hFFFFF;
+        end else begin
+            gt_link_meta <= gt_link_all;
+            gt_link_sync <= gt_link_meta;
+            if (gt_link_changed)
+                glb_rst_hold <= 20'hFFFFF;
+            else if (glb_rst_hold != 20'd0)
+                glb_rst_hold <= glb_rst_hold - 20'd1;
+        end
+    end
+
+    assign sysrst_glb_n = pll_locked && (glb_rst_hold == 20'd0);
 
     assign gt_link_up_led2 = ~(be_gt_link_up);
 
