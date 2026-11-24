@@ -141,8 +141,15 @@ set_property PACKAGE_PIN T28 [get_ports debug_uw1_t1]
 set_property IOSTANDARD LVCMOS33 [get_ports debug_uw1_t4]
 set_property PACKAGE_PIN T27 [get_ports debug_uw1_t4]
 
-set_property IOSTANDARD LVCMOS33 [get_ports debug_uw2_t1]
-set_property PACKAGE_PIN T26 [get_ports debug_uw2_t1]
+# set_property IOSTANDARD LVCMOS33 [get_ports debug_uw2_t1]
+# set_property PACKAGE_PIN T26 [get_ports debug_uw2_t1]
 
 set_property IOSTANDARD LVCMOS33 [get_ports debug_uw2_t4]
 set_property PACKAGE_PIN U27 [get_ports debug_uw2_t4]
+
+# GT TX user clock monitor (FE lane 0 -> UW1), 125 MHz
+set_property PACKAGE_PIN R28 [get_ports clk_tx_fe0_mon]
+set_property IOSTANDARD LVCMOS33 [get_ports clk_tx_fe0_mon]
+
+set_property PACKAGE_PIN T26 [get_ports clk_rx_fe0_mon]
+set_property IOSTANDARD LVCMOS33 [get_ports clk_rx_fe0_mon]

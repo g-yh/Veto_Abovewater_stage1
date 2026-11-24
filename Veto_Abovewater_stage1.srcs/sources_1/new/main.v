@@ -70,14 +70,16 @@ module main (
     // PTP debug outputs for Underwater 1 and 2
     output wire debug_uw1_t1,
     output wire debug_uw1_t4,
-    output wire debug_uw2_t1,
+    // output wire debug_uw2_t1,
     output wire debug_uw2_t4,
 
     output wire MCX_CLK0,
     output wire MCX_CLK1,
 
     // fan 	
-    output wire FAN_PWM
+    output wire FAN_PWM,
+    output wire clk_tx_fe0_mon,
+    output wire clk_rx_fe0_mon
 );
 
     //--------------------------------
@@ -301,7 +303,7 @@ module main (
     // bit0=t1, bit1=t2, bit2=t3, bit3=t4 for each FE channel.
     assign debug_uw1_t1 = ptp_flags[0];
     assign debug_uw1_t4 = ptp_flags[3];
-    assign debug_uw2_t1 = ptp_flags[4];
+    // assign debug_uw2_t1 = ptp_flags[4];
     assign debug_uw2_t4 = ptp_flags[7];
 
     //--------------------------------
@@ -1046,6 +1048,19 @@ module main (
         .probe9 (gtx_cpll_is_lock[0]),
         .probe10(sc_wr_rst_busy[0]),
         .probe11(adc_wr_rst_busy[0])
+    );
+    //--------------------------------
+    // FE lane 0 (-> UW1) GT TX user clock monitor, 125 MHz.
+    // Change the index below to probe another lane.
+    //--------------------------------
+    OBUF instance_obuf_clk_tx_fe0 (
+        .I (clk_txoutclk_bufg[0]),
+        .O (clk_tx_fe0_mon)
+    );
+
+    OBUF instance_obuf_clk_rx_fe0 (
+        .I (clk_rxoutclk_bufg[0]),
+        .O (clk_rx_fe0_mon)
     );
 endmodule
 
